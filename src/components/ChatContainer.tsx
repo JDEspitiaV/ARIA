@@ -436,9 +436,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
       const content = `### STRIDES HIGH-PERFORMANCE SYSTEM
 **Profile & Performance Data Calibrated**
 
-To finalize integral load management and tissue bulletproofing, please declare any active injuries, tight tissue, or kinetic chain history.
-
-*Select a quick preset below, type your status, or click **"EDIT INJURIES"** in the top bar.*`;
+*Declara tu estado físico a continuación o haz clic en **"EDIT INJURIES"** en la barra superior.*`;
 
       const initialPartialMsg: ChatMessage = {
         id: 'init-partial-1',
@@ -501,7 +499,7 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
     setInputMessage(prompt);
     
     // Explicitly update Firestore with reviewed status to ensure persistence
-    if (prompt.includes("100% healthy") || prompt.includes("No active injuries")) {
+    if (prompt.includes("100% healthy") || prompt.includes("No active injuries") || prompt.includes("100% Saludable")) {
       const updates: Partial<AthleteProfile> = {
         injuryHistory: [],
         activeInjuries: ['None reported (Tissue Ready / Fully Cleared)'],
@@ -511,41 +509,9 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       };
       await updateAthleteProfile(athlete.id, updates);
       setAthlete(prev => ({ ...prev, ...updates }));
-    } else if (prompt.includes("Left Hamstring")) {
-      const updates: Partial<AthleteProfile> = {
-        injuryHistory: [{
-          bodypart: 'Left Hamstring (Distal)',
-          type: 'Grade 1 Strain / Tightness',
-          severity: 'MILD',
-          date: new Date().toISOString().split('T')[0],
-          status: 'ACTIVE'
-        }],
-        activeInjuries: ['Left Hamstring (Distal) - Grade 1 Strain / Tightness (MILD, ACTIVE)'],
-        kineticDeficiencies: ['Right ankle dorsiflexion limit (12 deg)'],
-        injuryHistoryReviewed: true,
-        onboardingComplete: true
-      };
-      await updateAthleteProfile(athlete.id, updates);
-      setAthlete(prev => ({ ...prev, ...updates }));
-    } else if (prompt.includes("Patellar")) {
-      const updates: Partial<AthleteProfile> = {
-        injuryHistory: [{
-          bodypart: 'Right Knee (Patellar Tendon)',
-          type: 'Tendinopathy & Posterior Hip Impingement',
-          severity: 'MODERATE',
-          date: new Date().toISOString().split('T')[0],
-          status: 'ACTIVE'
-        }],
-        activeInjuries: ['Right Knee (Patellar Tendon) - Tendinopathy (MODERATE, ACTIVE)'],
-        kineticDeficiencies: ['Posterior hip impingement during maximal extension'],
-        injuryHistoryReviewed: true,
-        onboardingComplete: true
-      };
-      await updateAthleteProfile(athlete.id, updates);
-      setAthlete(prev => ({ ...prev, ...updates }));
     }
 
-    // Call dual-agent chat API
+    // Call chat API
     handleSendMessage(prompt);
   };
 
@@ -705,18 +671,23 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       await deleteThreadMessages(athlete.id, activeThreadId, idsToPurge);
     }
 
-    // Re-dispatch synthesis for that user prompt
-    handleSendMessage(precedingUserMsg.content, remainingMessages);
+    // Re-dispatch synthesis for that user prompt without duplicating the existing user message
+    handleSendMessage(precedingUserMsg.content, remainingMessages, { isRegenerate: true });
   };
 
   // Function to handle user message submission
-  const handleSendMessage = async (textToSend?: string, customBaseMessages?: ChatMessage[]) => {
+  const handleSendMessage = async (
+    textToSend?: string, 
+    customBaseMessages?: ChatMessage[],
+    options?: { isRegenerate?: boolean }
+  ) => {
     if (isListeningRef.current) {
       stopListening();
     }
+    const isRegenerate = Boolean(options?.isRegenerate);
     const text = textToSend || inputMessage;
     const hasFiles = attachedFiles.length > 0 || attachedDriveFiles.length > 0;
-    if ((!text.trim() && !hasFiles) || isLoading || isUploading || isSendingRef.current) return;
+    if ((!text.trim() && !hasFiles && !isRegenerate) || isLoading || isUploading || isSendingRef.current) return;
 
     isSendingRef.current = true;
     setIsLoading(true);
@@ -728,57 +699,62 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       currentThreadId = await onRequireThread(existingGreeting);
     }
 
-    let uploadedFiles: AttachedFile[] = [];
-    
-    if (attachedFiles.length > 0 && !textToSend) { // Only upload attached local files for new user messages
-      setIsUploading(true);
-      setStatusLog(`Uploading ${attachedFiles.length} file(s) to Cloudinary CDN...`);
-      try {
-        uploadedFiles = await uploadChatFiles(athlete.id, attachedFiles);
-      } catch (err: any) {
-        console.error('File upload failed:', err);
-        alert(`Could not upload file attachments: ${err.message || 'Storage error'}`);
+    let newMessages: ChatMessage[];
+    if (isRegenerate) {
+      newMessages = customBaseMessages || messages;
+    } else {
+      let uploadedFiles: AttachedFile[] = [];
+      
+      if (attachedFiles.length > 0 && !textToSend) { // Only upload attached local files for new user messages
+        setIsUploading(true);
+        setStatusLog(`Uploading ${attachedFiles.length} file(s) to Cloudinary CDN...`);
+        try {
+          uploadedFiles = await uploadChatFiles(athlete.id, attachedFiles);
+        } catch (err: any) {
+          console.error('File upload failed:', err);
+          alert(`Could not upload file attachments: ${err.message || 'Storage error'}`);
+          setIsUploading(false);
+          setIsLoading(false);
+          isSendingRef.current = false;
+          return;
+        }
         setIsUploading(false);
-        setIsLoading(false);
-        isSendingRef.current = false;
-        return;
       }
-      setIsUploading(false);
-    }
 
-    if (attachedDriveFiles.length > 0 && !textToSend) {
-      uploadedFiles = [...uploadedFiles, ...attachedDriveFiles];
-    }
+      if (attachedDriveFiles.length > 0 && !textToSend) {
+        uploadedFiles = [...uploadedFiles, ...attachedDriveFiles];
+      }
 
-    const fileSummary = uploadedFiles.map(f => f.name).join(', ');
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: text || (fileSummary ? `[Attached Files: ${fileSummary}]` : ''),
-      timestamp: new Date().toISOString(),
-      ...(uploadedFiles.length > 0 && {
-        files: uploadedFiles,
-        // Legacy single-file fields for backward compatibility
-        fileUrl: uploadedFiles[0].url,
-        fileType: uploadedFiles[0].type,
-        fileName: uploadedFiles[0].name
-      })
-    };
+      const fileSummary = uploadedFiles.map(f => f.name).join(', ');
+      const userMsg: ChatMessage = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: text || (fileSummary ? `[Attached Files: ${fileSummary}]` : ''),
+        timestamp: new Date().toISOString(),
+        ...(uploadedFiles.length > 0 && {
+          files: uploadedFiles,
+          // Legacy single-file fields for backward compatibility
+          fileUrl: uploadedFiles[0].url,
+          fileType: uploadedFiles[0].type,
+          fileName: uploadedFiles[0].name
+        })
+      };
 
-    const baseList = customBaseMessages || messages;
-    const newMessages = [...baseList, userMsg];
-    setMessages(newMessages);
+      const baseList = customBaseMessages || messages;
+      newMessages = [...baseList, userMsg];
+      setMessages(newMessages);
 
-    if (!textToSend) {
-      setInputMessage('');
-      setAttachedFiles([]);
-      setAttachedDriveFiles([]);
-    }
+      if (!textToSend) {
+        setInputMessage('');
+        setAttachedFiles([]);
+        setAttachedDriveFiles([]);
+      }
 
-    // Save user message to Firebase Firestore
-    saveChatMessage(athlete.id, userMsg);
-    if (currentThreadId) {
-      await saveThreadMessage(athlete.id, currentThreadId, userMsg);
+      // Save user message to Firebase Firestore
+      saveChatMessage(athlete.id, userMsg);
+      if (currentThreadId) {
+        await saveThreadMessage(athlete.id, currentThreadId, userMsg);
+      }
     }
 
     // Step-by-step telemetry status logs

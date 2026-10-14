@@ -46,7 +46,7 @@ const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env)
 const procEnv = (typeof process !== 'undefined' && process.env) || {};
 
 const firebaseConfig = {
-  apiKey: metaEnv.VITE_FIREBASE_API_KEY || procEnv.VITE_FIREBASE_API_KEY || appletConfig.apiKey,
+  apiKey: metaEnv.VITE_FIREBASE_API_KEY || procEnv.VITE_FIREBASE_API_KEY || '',
   authDomain: metaEnv.VITE_FIREBASE_AUTH_DOMAIN || procEnv.VITE_FIREBASE_AUTH_DOMAIN || appletConfig.authDomain,
   projectId: metaEnv.VITE_FIREBASE_PROJECT_ID || procEnv.VITE_FIREBASE_PROJECT_ID || appletConfig.projectId,
   storageBucket: metaEnv.VITE_FIREBASE_STORAGE_BUCKET || procEnv.VITE_FIREBASE_STORAGE_BUCKET || appletConfig.storageBucket || `${appletConfig.projectId}.appspot.com`,
@@ -386,6 +386,7 @@ function normalizeProfile(athleteId: string, raw: any): { profile: AthleteProfil
     name: raw.name || raw.displayName || `${raw.firstName || ''} ${raw.lastName || ''}`.trim() || 'Athlete',
     isSubscribed,
     role: (raw.role?.toUpperCase() === 'COACH' ? 'COACH' : 'ATHLETE') as 'ATHLETE' | 'COACH',
+    clubId: raw.clubId !== undefined ? raw.clubId : null,
     anthropometrics: {
       heightCm,
       weightKg,
@@ -474,6 +475,7 @@ export async function initializeUserRecord(user: User): Promise<AthleteProfile> 
     name: user.displayName || 'Athlete',
     isSubscribed: false,
     role: 'ATHLETE',
+    clubId: null,
     anthropometrics: { heightCm: 0, weightKg: 0, inseamCm: 0, age: 0, sex: 'MALE' },
     targetEvents: ['100m', '200m'],
     personalBests: {},
@@ -619,12 +621,14 @@ export async function getThreadMessages(userId: string, threadId: string): Promi
   const activeUserId = auth.currentUser?.uid || userId;
   try {
     const msgsRef = collection(db, 'users', activeUserId, 'chatThreads', threadId, 'messages');
-    const q = query(msgsRef, orderBy('timestamp', 'asc'), limit(100));
+    const q = query(msgsRef, orderBy('timestamp', 'asc'), limit(200));
     const snapshot = await getDocs(q);
     const messages: ChatMessage[] = [];
     snapshot.forEach(docSnap => {
       messages.push(docSnap.data() as ChatMessage);
     });
+    // Ensure chronological ordering with date timestamp tie-breakers
+    messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     return messages;
   } catch (err: any) {
     handleFirestoreError(err, OperationType.GET, `users/${activeUserId}/chatThreads/${threadId}/messages`);

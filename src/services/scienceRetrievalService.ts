@@ -154,7 +154,7 @@ export async function fetchPubMedLiteratureRaw(query: string): Promise<Literatur
       
       const pubYear = doc.pubdate ? String(doc.pubdate).split(' ')[0] : '2024';
       const authorList = doc.authors?.map((a: any) => a.name || a.author || '').filter(Boolean).join(', ') || 'PubMed Researchers';
-      const doiVal = doc.articleids?.find((i: any) => i.idtype === 'doi')?.value || `10.3389/fphys.${pubYear}.${id}`;
+      const doiVal = doc.articleids?.find((i: any) => i.idtype === 'doi')?.value || '';
 
       return {
         id: `pmid-${id}`,
@@ -201,7 +201,7 @@ export async function fetchOpenAlexLiteratureRaw(query: string): Promise<Literat
 
       const pubYear = item.publication_year ? String(item.publication_year) : '2024';
       const authorList = item.authorships?.map((a: any) => a.author?.display_name).filter(Boolean).slice(0, 3).join(', ') || 'OpenAlex Researchers';
-      const doiVal = item.doi || `10.1016/j.jbiomech.${pubYear}.01`;
+      const doiVal = item.doi ? item.doi.replace(/^https?:\/\/doi\.org\//, '') : '';
 
       return {
         id: item.id || `openalex-${Math.random().toString(36).substring(2, 9)}`,
@@ -238,7 +238,7 @@ export async function fetchEuropePMCLiteratureRaw(query: string): Promise<Litera
     return results.map((item: any) => {
       const pubYear = item.pubYear || '2024';
       const authorList = item.authorString || 'Europe PMC Authors';
-      const doiVal = item.doi || (item.pmid ? `10.1016/j.epmc.${item.pmid}` : `10.1016/j.epmc.${pubYear}`);
+      const doiVal = item.doi || '';
 
       return {
         id: item.id ? `epmc-${item.id}` : `epmc-${Math.random().toString(36).substring(2, 9)}`,
@@ -368,7 +368,7 @@ export async function fetchArxivLiteratureRaw(query: string): Promise<Literature
       const abstract = summaryMatch ? summaryMatch[1].replace(/\s+/g, ' ').trim() : 'arXiv Pre-print Manuscript';
       const year = publishedMatch ? publishedMatch[1] : '2024';
       const arxivId = idMatch ? idMatch[1].trim() : `arxiv-${i}`;
-      const doi = doiMatch ? doiMatch[1].trim() : `10.48550/arXiv.${arxivId.split('/').pop() || 'work'}`;
+      const doi = doiMatch ? doiMatch[1].trim() : '';
 
       items.push({
         id: `arxiv-${arxivId.split('/').pop() || i}`,
@@ -415,7 +415,7 @@ export async function fetchOpenReviewLiteratureRaw(query: string): Promise<Liter
         abstract,
         year,
         authors: 'OpenReview Authors',
-        doi: `10.48550/openreview.${n.id || 'note'}`,
+        doi: '',
         url: `https://openreview.net/forum?id=${n.id}`,
         source: 'OpenReview' as const
       };
@@ -457,7 +457,7 @@ export async function fetchBmcDoajLiteratureRaw(query: string): Promise<Literatu
         abstract,
         year: String(year),
         authors: authorList || 'Open Access Researchers',
-        doi: doiIdentifier || `10.1186/s13102.${year}.${item.id || 'bmc'}`,
+        doi: doiIdentifier || '',
         url: linkUrl,
         source: 'BMC_DOAJ' as const
       };
@@ -500,7 +500,7 @@ export async function fetchClinicalTrialsRaw(query: string): Promise<LiteratureI
         abstract,
         year,
         authors: idModule.organization?.fullName || 'Clinical Research Group',
-        doi: `10.18632/clinicaltrials.${nctId}`,
+        doi: '',
         url: `https://clinicaltrials.gov/study/${nctId}`,
         source: 'ClinicalTrials' as const
       };

@@ -92,11 +92,14 @@ export function getRelevantEventStandard(
   query: string = ''
 ): EventReferenceStandard | null {
   const standards = loadLocalReferenceStandards();
-  const searchCorpus = `${athleteEvents.join(' ')} ${query}`.toLowerCase();
+  const searchCorpus = ` ${athleteEvents.join(' ')} ${query} `.toLowerCase();
 
   for (const std of standards) {
     for (const kw of std.keywords) {
-      if (searchCorpus.includes(kw.toLowerCase())) {
+      const cleanKw = kw.toLowerCase().trim();
+      const escaped = cleanKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+      if (regex.test(searchCorpus)) {
         return std;
       }
     }

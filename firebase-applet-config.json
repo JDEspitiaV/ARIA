@@ -1,11 +1,7 @@
 {
   "projectId": "gen-lang-client-0657970453",
   "appId": "1:167206208203:web:86c51a5e816f64415cd14e",
-  "apiKey": "AIzaSyCYVcqrB4ECa7TADDDEW4xgSNMrIVaJZPI",
   "authDomain": "gen-lang-client-0657970453.firebaseapp.com",
   "storageBucket": "gen-lang-client-0657970453.firebasestorage.app",
-  "messagingSenderId": "167206208203",
-  "measurementId": "",
-  "oAuthClientId": "167206208203-4fgovbpp63a1fcniqfnf9hupsmh9cs39.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "messagingSenderId": "167206208203"
 }

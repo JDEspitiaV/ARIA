@@ -4,5 +4,11 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+
+# Environment variables & secrets
+.env
+.env.*
 !.env.example
+
+# Local Firebase config overrides
+firebase-applet-config.json.local

@@ -2,9 +2,8 @@
  * ARIA Unified Athletic Cognitive Engine
  * Single integrated intelligence combining technical sprinting performance,
  * S&C, injury prevention, and long-term skeletal/structural longevity.
+ * Tools converted to JSON Schema for OpenAI-compatible providers.
  */
-
-import { Type } from '@google/genai';
 
 export const ARIA_SYSTEM_PROMPT = `You are ARIA, an integral track & field sprint coach. You are not two specialists working separately — you are ONE expert mind that simultaneously integrates technical performance and long-term structural health.
 
@@ -58,28 +57,28 @@ export const STRIDES_SYSTEM_PROMPT = ARIA_SYSTEM_PROMPT;
 
 export const UPDATE_INFERRED_TRAINING_CONTEXT_TOOL = {
   name: 'updateInferredTrainingContext',
-  description: "Updates inferred training context (current phase, proximity to competition, next competition, notes) for athletes WITHOUT a club affiliation, extracted directly from natural conversation.",
+  description: 'Updates inferred training context (current phase, proximity to competition, next competition, notes) for athletes WITHOUT a club affiliation, extracted directly from natural conversation.',
   parameters: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
       currentPhase: { 
-        type: Type.STRING, 
+        type: 'string', 
         description: 'Inferred training phase: GPP (General Prep), SPP (Specific Prep), Competitive, Taper, or Transition' 
       },
       proximityToCompetition: { 
-        type: Type.STRING, 
+        type: 'string', 
         description: 'Estimated or mentioned proximity (e.g., "10 días", "3 semanas", "en 2 meses", "sin competencia cercana")' 
       },
       nextCompetition: {
-        type: Type.OBJECT,
+        type: 'object',
         properties: {
-          name: { type: Type.STRING, description: 'Competition name if mentioned' },
-          date: { type: Type.STRING, description: 'Approximate or exact date (YYYY-MM-DD)' },
-          priority: { type: Type.STRING, description: 'A, B, or C' }
+          name: { type: 'string', description: 'Competition name if mentioned' },
+          date: { type: 'string', description: 'Approximate or exact date (YYYY-MM-DD)' },
+          priority: { type: 'string', description: 'A, B, or C' }
         }
       },
       notes: { 
-        type: Type.STRING, 
+        type: 'string', 
         description: 'Synthesized context notes from the athlete conversation about their training state' 
       }
     },
@@ -91,44 +90,44 @@ export const UPDATE_PERIODIZATION_PLAN_TOOL = {
   name: 'updatePeriodizationPlan',
   description: "Updates or adjusts the athlete's annual periodization plan (macrocycle, mesocycles with phase/volume/intensity targets) and competition calendar (events, dates, priority A/B/C, taper start dates) in the database.",
   parameters: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
-      season: { type: Type.STRING, description: 'Season year, e.g. "2026"' },
+      season: { type: 'string', description: 'Season year, e.g. "2026"' },
       macrocycle: {
-        type: Type.OBJECT,
+        type: 'object',
         properties: {
-          startDate: { type: Type.STRING, description: 'YYYY-MM-DD' },
-          endDate: { type: Type.STRING, description: 'YYYY-MM-DD' },
-          goal: { type: Type.STRING, description: 'Primary season target or goal' }
+          startDate: { type: 'string', description: 'YYYY-MM-DD' },
+          endDate: { type: 'string', description: 'YYYY-MM-DD' },
+          goal: { type: 'string', description: 'Primary season target or goal' }
         }
       },
       mesocycles: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            name: { type: Type.STRING },
-            startDate: { type: Type.STRING, description: 'YYYY-MM-DD' },
-            endDate: { type: Type.STRING, description: 'YYYY-MM-DD' },
-            phase: { type: Type.STRING, description: 'GPP, SPP, Competitive, Taper, or Transition' },
-            weeklyVolumeTarget: { type: Type.STRING, description: 'e.g. alto, moderado, bajo' },
-            weeklyIntensityTarget: { type: Type.STRING, description: 'e.g. bajo-moderado, alto, pico' },
-            focusNotes: { type: Type.STRING }
+            name: { type: 'string' },
+            startDate: { type: 'string', description: 'YYYY-MM-DD' },
+            endDate: { type: 'string', description: 'YYYY-MM-DD' },
+            phase: { type: 'string', description: 'GPP, SPP, Competitive, Taper, or Transition' },
+            weeklyVolumeTarget: { type: 'string', description: 'e.g. alto, moderado, bajo' },
+            weeklyIntensityTarget: { type: 'string', description: 'e.g. bajo-moderado, alto, pico' },
+            focusNotes: { type: 'string' }
           },
           required: ['name', 'startDate', 'endDate', 'phase']
         },
         description: 'Scheduled mesocycles / training blocks'
       },
       competitions: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            name: { type: Type.STRING },
-            date: { type: Type.STRING, description: 'YYYY-MM-DD' },
-            priority: { type: Type.STRING, description: 'A, B, or C' },
-            events: { type: Type.ARRAY, items: { type: Type.STRING } },
-            taperStartDate: { type: Type.STRING, description: 'YYYY-MM-DD or empty' }
+            name: { type: 'string' },
+            date: { type: 'string', description: 'YYYY-MM-DD' },
+            priority: { type: 'string', description: 'A, B, or C' },
+            events: { type: 'array', items: { type: 'string' } },
+            taperStartDate: { type: 'string', description: 'YYYY-MM-DD or empty' }
           },
           required: ['name', 'date', 'priority', 'events']
         },
@@ -142,23 +141,23 @@ export const UPDATE_ATHLETE_DATA_TOOL = {
   name: 'updateAthleteData',
   description: "Updates the athlete's personal bests/PRs (event from full discipline union, time or mark, date), goal projections (target mark, target date), and injury reports (bodypart, type, severity, date, status) in the STRIDES database.",
   parameters: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
       personalBests: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
             event: { 
-              type: Type.STRING, 
+              type: 'string', 
               description: 'Discipline name (e.g. 100m, 400mH, 1500m, Long Jump, Shot Put, Decathlon, Back Squat, Power Clean)' 
             },
             timeOrMark: { 
-              type: Type.STRING, 
+              type: 'string', 
               description: 'Time or distance/mark (e.g. 10.20s, 51.40s, 7.92m, 18.50m, 140kg)' 
             },
             date: { 
-              type: Type.STRING, 
+              type: 'string', 
               description: 'Date or season (e.g. 2024-05-12, 2024 Outdoor)' 
             }
           },
@@ -167,28 +166,28 @@ export const UPDATE_ATHLETE_DATA_TOOL = {
         description: 'Updates to personal bests or power records'
       },
       goalProjections: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            event: { type: Type.STRING },
-            targetMark: { type: Type.STRING },
-            targetDate: { type: Type.STRING }
+            event: { type: 'string' },
+            targetMark: { type: 'string' },
+            targetDate: { type: 'string' }
           },
           required: ['event', 'targetMark']
         },
         description: 'Target goals for upcoming competitions'
       },
       injuryReports: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            bodypart: { type: Type.STRING, description: 'e.g. Hamstring (Biceps Femoris), Patellar Tendon, Achilles, Ankle' },
-            type: { type: Type.STRING, description: 'e.g. Grade 1 strain, Tendinopathy, Tightness, Impingement' },
-            severity: { type: Type.STRING, description: 'MILD, MODERATE, or SEVERE' },
-            date: { type: Type.STRING, description: 'Onset date or duration' },
-            status: { type: Type.STRING, description: 'ACTIVE, REHABILITATING, or RESOLVED' }
+            bodypart: { type: 'string', description: 'e.g. Hamstring (Biceps Femoris), Patellar Tendon, Achilles, Ankle' },
+            type: { type: 'string', description: 'e.g. Grade 1 strain, Tendinopathy, Tightness, Impingement' },
+            severity: { type: 'string', description: 'MILD, MODERATE, or SEVERE' },
+            date: { type: 'string', description: 'Onset date or duration' },
+            status: { type: 'string', description: 'ACTIVE, REHABILITATING, or RESOLVED' }
           },
           required: ['bodypart', 'type', 'severity', 'status']
         },
@@ -202,31 +201,31 @@ export const UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL = {
   name: 'updateClinicalAndGeneticProfile',
   description: "Updates the athlete's clinical history or genetic predispositions when the athlete mentions a diagnosed condition, a family medical history relevant to injury risk, or shares a genetic test result.",
   parameters: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
       clinicalHistory: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            condition: { type: Type.STRING, description: 'Medical or clinical condition (e.g. Exercise-induced asthma, Osteopenia)' },
-            diagnosedDate: { type: Type.STRING, description: 'Approximate or exact diagnosis date/year' },
-            status: { type: Type.STRING, description: 'ACTIVE, MANAGED, or RESOLVED' },
-            notes: { type: Type.STRING, description: 'Clinical context, medications, or management protocols' },
-            reportedVia: { type: Type.STRING, description: 'conversation, attached_document, or coach_input' }
+            condition: { type: 'string', description: 'Medical or clinical condition (e.g. Exercise-induced asthma, Osteopenia)' },
+            diagnosedDate: { type: 'string', description: 'Approximate or exact diagnosis date/year' },
+            status: { type: 'string', description: 'ACTIVE, MANAGED, or RESOLVED' },
+            notes: { type: 'string', description: 'Clinical context, medications, or management protocols' },
+            reportedVia: { type: 'string', description: 'conversation, attached_document, or coach_input' }
           },
           required: ['condition', 'status']
         },
         description: 'Diagnosed clinical conditions or medical history entries'
       },
       geneticPredispositions: {
-        type: Type.ARRAY,
+        type: 'array',
         items: {
-          type: Type.OBJECT,
+          type: 'object',
           properties: {
-            trait: { type: Type.STRING, description: 'e.g. Tendinopathy collagen gene variant, Fast-twitch ACTN3 RR/RX, Bone mineral density marker' },
-            source: { type: Type.STRING, description: 'self_reported or genetic_test_document' },
-            notes: { type: Type.STRING, description: 'Implications for loading, recovery intervals, or collagen synthesis' }
+            trait: { type: 'string', description: 'e.g. Tendinopathy collagen gene variant, Fast-twitch ACTN3 RR/RX, Bone mineral density marker' },
+            source: { type: 'string', description: 'self_reported or genetic_test_document' },
+            notes: { type: 'string', description: 'Implications for loading, recovery intervals, or collagen synthesis' }
           },
           required: ['trait']
         },
@@ -235,3 +234,10 @@ export const UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL = {
     }
   }
 };
+
+export const ARIA_TOOLS = [
+  UPDATE_ATHLETE_DATA_TOOL,
+  UPDATE_PERIODIZATION_PLAN_TOOL,
+  UPDATE_INFERRED_TRAINING_CONTEXT_TOOL,
+  UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL
+];

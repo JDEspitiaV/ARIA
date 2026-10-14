@@ -263,30 +263,18 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
         </ReactMarkdown>
       </div>
 
-      {/* Quick Onboarding Action Buttons if Partial Onboarding Required */}
+      {/* Quick Action Button for Healthy Clearance if Partial Onboarding Required */}
       {message.metadata?.isInjuryOnboardingResponse && onSelectInjuryPrompt && (
         <div className="mt-4 pt-3 border-t border-zinc-800 flex flex-wrap gap-2">
-          <p className="w-full text-xs font-mono text-amber-300 font-bold mb-1 flex items-center gap-1">
-            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-            SELECT OR CUSTOMIZE YOUR ACTIVE INJURY DECLARATION:
+          <p className="w-full text-xs font-mono text-zinc-400 font-bold mb-1 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5 text-emerald-400" />
+            DECLARACIÓN DE ESTADO FÍSICO Y LESIONES:
           </p>
           <button
             onClick={() => onSelectInjuryPrompt("Active Injury Declaration: No active injuries. Tissue is 100% healthy, zero kinetic deficiencies reported.")}
-            className="px-3 py-1.5 rounded bg-emerald-950 border border-emerald-700 hover:bg-emerald-900 text-emerald-300 text-xs font-mono transition-colors"
+            className="px-3 py-1.5 rounded bg-emerald-950/80 border border-emerald-700 hover:bg-emerald-900 text-emerald-300 text-xs font-mono transition-colors flex items-center gap-1.5"
           >
-            ✓ 100% Healthy (No Active Injuries)
-          </button>
-          <button
-            onClick={() => onSelectInjuryPrompt("Active Injury Declaration: Left distal hamstring tightness/strain history (Grade 1). Pain at speeds >90% vMax. Right ankle dorsiflexion limit (12 deg).")}
-            className="px-3 py-1.5 rounded bg-amber-950 border border-amber-700 hover:bg-amber-900 text-amber-300 text-xs font-mono transition-colors"
-          >
-            ⚠️ Left Hamstring Strain & Ankle Limit
-          </button>
-          <button
-            onClick={() => onSelectInjuryPrompt("Active Injury Declaration: Patellar tendinopathy (right knee) & posterior hip impingement during maximal extension.")}
-            className="px-3 py-1.5 rounded bg-amber-950 border border-amber-700 hover:bg-amber-900 text-amber-300 text-xs font-mono transition-colors"
-          >
-            ⚠️ Patellar Tendinopathy & Hip Impingement
+            ✓ 100% Saludable (Sin lesiones activas)
           </button>
         </div>
       )}

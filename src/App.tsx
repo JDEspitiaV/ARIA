@@ -290,19 +290,20 @@ export default function App() {
         setAthlete(profile);
 
         // Load periodization plan & competition calendar & inferred context
+        const isClub = Boolean(profile?.clubId && profile.clubId.trim().length > 0);
         try {
           const [userPlan, userCal, userInferred] = await Promise.all([
             getAthletePeriodizationPlan(user.uid),
             getCompetitionCalendar(user.uid),
             getInferredTrainingContext(user.uid)
           ]);
-          setPeriodizationPlan(userPlan || getDefaultPeriodizationPlan(user.uid));
-          setCompetitionCalendar(userCal || getDefaultCompetitionCalendar(user.uid));
+          setPeriodizationPlan(userPlan || (isClub ? null : getDefaultPeriodizationPlan(user.uid)));
+          setCompetitionCalendar(userCal || (isClub ? null : getDefaultCompetitionCalendar(user.uid)));
           setInferredContext(userInferred);
         } catch (planErr) {
           console.warn('Error loading periodization plan or inferred context:', planErr);
-          setPeriodizationPlan(getDefaultPeriodizationPlan(user.uid));
-          setCompetitionCalendar(getDefaultCompetitionCalendar(user.uid));
+          setPeriodizationPlan(isClub ? null : getDefaultPeriodizationPlan(user.uid));
+          setCompetitionCalendar(isClub ? null : getDefaultCompetitionCalendar(user.uid));
         }
 
         const decision = evaluateOnboardingDecision(profile);
@@ -330,19 +331,20 @@ export default function App() {
     const profile = await getAthleteProfile(userId);
     setAthlete(profile);
 
+    const isClub = Boolean(profile?.clubId && profile.clubId.trim().length > 0);
     try {
       const [userPlan, userCal, userInferred] = await Promise.all([
         getAthletePeriodizationPlan(userId),
         getCompetitionCalendar(userId),
         getInferredTrainingContext(userId)
       ]);
-      setPeriodizationPlan(userPlan || getDefaultPeriodizationPlan(userId));
-      setCompetitionCalendar(userCal || getDefaultCompetitionCalendar(userId));
+      setPeriodizationPlan(userPlan || (isClub ? null : getDefaultPeriodizationPlan(userId)));
+      setCompetitionCalendar(userCal || (isClub ? null : getDefaultCompetitionCalendar(userId)));
       setInferredContext(userInferred);
     } catch (planErr) {
       console.warn('Error loading periodization plan or inferred context:', planErr);
-      setPeriodizationPlan(getDefaultPeriodizationPlan(userId));
-      setCompetitionCalendar(getDefaultCompetitionCalendar(userId));
+      setPeriodizationPlan(isClub ? null : getDefaultPeriodizationPlan(userId));
+      setCompetitionCalendar(isClub ? null : getDefaultCompetitionCalendar(userId));
     }
 
     const decision = evaluateOnboardingDecision(profile);

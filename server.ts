@@ -3,7 +3,8 @@ import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
+import { streamChat, generateJson, StreamResult } from "./src/services/llmProvider";
+import pdfParse from "pdf-parse";
 import { 
   fetchAllScientificLiteratureRaw, 
   weighScientificLiterature,
@@ -19,6 +20,7 @@ import {
 } from "./src/services/youtubeRetrievalService";
 import { 
   STRIDES_SYSTEM_PROMPT, 
+  ARIA_TOOLS,
   UPDATE_ATHLETE_DATA_TOOL,
   UPDATE_PERIODIZATION_PLAN_TOOL,
   UPDATE_INFERRED_TRAINING_CONTEXT_TOOL,
@@ -35,12 +37,40 @@ import { uploadToCloudinary, destroyFromCloudinary } from "./src/services/cloudi
 import { sessionCache } from "./src/services/sessionCacheService";
 import appletConfig from "./firebase-applet-config.json";
 import { 
+  initializeApp as initAdminApp, 
+  getApps as getAdminApps, 
+  getApp as getAdminApp, 
+  type App as AdminApp 
+} from "firebase-admin/app";
+import { 
+  getFirestore as getAdminFirestore, 
+  type Firestore as AdminFirestore 
+} from "firebase-admin/firestore";
+import { 
   getAthleteProfile, 
   getAthletePeriodizationPlan, 
   getCompetitionCalendar 
 } from "./src/lib/firebase";
 
 dotenv.config();
+
+// Firebase Admin SDK Initialization (server-side authoritative access)
+const firebaseProjectId = process.env.VITE_FIREBASE_PROJECT_ID || appletConfig.projectId;
+let adminApp: AdminApp | null = null;
+let adminDb: AdminFirestore | null = null;
+
+try {
+  if (!getAdminApps().length) {
+    adminApp = initAdminApp({
+      projectId: firebaseProjectId
+    });
+  } else {
+    adminApp = getAdminApp();
+  }
+  adminDb = getAdminFirestore(adminApp);
+} catch (adminErr) {
+  console.warn("[Firebase-Admin] Initialization warning:", adminErr);
+}
 
 // Server-authoritative Inferred Training Context storage (bypassing client firestore rules)
 const inferredContextStore = new Map<string, InferredTrainingContext>();
@@ -175,230 +205,12 @@ const app = express();
 // Increase body size limit for base64 file payloads during Cloudinary staging
 app.use(express.json({ limit: '25mb' }));
 
-const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+const apiKey = process.env.LLM_API_KEY;
 if (!apiKey) {
-  throw new Error("FATAL: GEMINI_API_KEY environment variable is missing.");
+  throw new Error("FATAL: LLM_API_KEY environment variable is missing.");
 }
 
-const ai = new GoogleGenAI({ apiKey });
-
-interface GenerateContentParams {
-  contents: any;
-  config?: any;
-  preferredModel?: string;
-  fallbackModels?: string[];
-  maxRetriesPerModel?: number;
-  athleteId?: string;
-  abortSignal?: AbortSignal;
-}
-
-interface StreamResult {
-  text: string;
-  functionCalls?: any[];
-  modelUsed: string;
-}
-
-async function callGeminiStreamWithResilience(
-  params: GenerateContentParams,
-  onChunk: (textChunk: string) => void
-): Promise<StreamResult> {
-  const models = [
-    params.preferredModel || "gemini-3.1-flash-lite",
-    ...(params.fallbackModels || ["gemini-3.8-flash", "gemini-flash-latest"])
-  ];
-  const uniqueModels = Array.from(new Set(models));
-  
-  let lastError: any = null;
-
-  for (const model of uniqueModels) {
-    if (params.abortSignal?.aborted) {
-      console.log(`[GeminiStreamResilience] Abort signal active. Cancelling model attempts.`);
-      throw new Error("Client aborted request");
-    }
-
-    const retries = params.maxRetriesPerModel ?? 1;
-    for (let attempt = 0; attempt < retries; attempt++) {
-      if (params.abortSignal?.aborted) {
-        throw new Error("Client aborted request");
-      }
-
-      let yieldedAnyChunk = false;
-      let fullText = "";
-      const collectedFunctionCalls: any[] = [];
-      const start = Date.now();
-
-      const controller = new AbortController();
-      let timedOut = false;
-      const firstChunkTimeoutMs = 8000; // 8 seconds timeout for streaming first chunk before fast-fallback
-      let timeoutId: NodeJS.Timeout | null = setTimeout(() => {
-        if (!yieldedAnyChunk) {
-          timedOut = true;
-          console.warn(`[GeminiStreamResilience] Hard timeout of ${firstChunkTimeoutMs}ms exceeded waiting for first chunk on model '${model}'. Aborting...`);
-          try {
-            controller.abort(new Error(`Timeout of ${firstChunkTimeoutMs}ms exceeded waiting for first chunk on model '${model}'`));
-          } catch {}
-        }
-      }, firstChunkTimeoutMs);
-
-      const onClientAbort = () => {
-        try {
-          controller.abort(new Error("Client aborted request"));
-        } catch {}
-      };
-      if (params.abortSignal) {
-        params.abortSignal.addEventListener('abort', onClientAbort, { once: true });
-      }
-
-      try {
-        const stream = await ai.models.generateContentStream({
-          model,
-          contents: params.contents,
-          config: {
-            ...params.config,
-            abortSignal: controller.signal
-          }
-        });
-
-        for await (const chunk of stream) {
-          if (params.abortSignal?.aborted) {
-            console.log(`[GeminiStreamResilience] Client aborted during stream iteration. Stopping.`);
-            controller.abort();
-            throw new Error("Client aborted request");
-          }
-
-          if (chunk.text) {
-            if (!yieldedAnyChunk) {
-              yieldedAnyChunk = true;
-              if (timeoutId) {
-                clearTimeout(timeoutId);
-                timeoutId = null;
-              }
-            }
-            fullText += chunk.text;
-            onChunk(chunk.text);
-          }
-          if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-            if (!yieldedAnyChunk) {
-              yieldedAnyChunk = true;
-              if (timeoutId) {
-                clearTimeout(timeoutId);
-                timeoutId = null;
-              }
-            }
-            collectedFunctionCalls.push(...chunk.functionCalls);
-          }
-        }
-
-        console.log(`[GeminiStreamResilience] Stream finished successfully on model '${model}' in ${Date.now() - start}ms (Text Length: ${fullText.length})`);
-        return {
-          text: fullText,
-          functionCalls: collectedFunctionCalls.length > 0 ? collectedFunctionCalls : undefined,
-          modelUsed: model
-        };
-      } catch (err: any) {
-        lastError = err;
-        const errMsg = err?.message || String(err);
-        const isClientAbort = params.abortSignal?.aborted || errMsg.includes('Client aborted');
-        if (isClientAbort) {
-          throw err;
-        }
-
-        const isTimeoutOrAbort = timedOut || controller.signal.aborted || err?.name === 'AbortError' || errMsg.includes('Timeout') || errMsg.includes('aborted');
-        const is503OrUnavailable = err?.status === 503 || errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('high demand');
-
-        console.warn(`[GeminiStreamResilience] ${isTimeoutOrAbort ? 'TIMEOUT/ABORT' : 'Warning'} on model '${model}' (attempt ${attempt + 1}/${retries}, yielded: ${yieldedAnyChunk}): ${errMsg}`);
-
-        // If chunks were already yielded to client, return accumulated text
-        if (yieldedAnyChunk) {
-          console.warn(`[GeminiStreamResilience] Stream interrupted after partial delivery on '${model}'. Finalizing with accumulated output.`);
-          return {
-            text: fullText,
-            functionCalls: collectedFunctionCalls.length > 0 ? collectedFunctionCalls : undefined,
-            modelUsed: model
-          };
-        }
-
-        if (attempt < retries - 1 && !isTimeoutOrAbort && !is503OrUnavailable) {
-          await new Promise((r) => setTimeout(r, 200));
-        } else {
-          console.warn(`[GeminiStreamResilience] Fast-falling back from '${model}' to next stream model in chain...`);
-          break; // Move to next fallback model immediately
-        }
-      } finally {
-        if (params.abortSignal) {
-          params.abortSignal.removeEventListener('abort', onClientAbort);
-        }
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      }
-    }
-  }
-
-  throw lastError || new Error("All Gemini model streaming requests failed after fast-fallback chain.");
-}
-
-async function callGeminiWithResilience(params: GenerateContentParams) {
-  const models = [
-    params.preferredModel || "gemini-flash-latest",
-    ...(params.fallbackModels || ["gemini-3.1-flash-lite", "gemini-3.8-flash"])
-  ];
-  const uniqueModels = Array.from(new Set(models));
-  
-  let lastError: any = null;
-
-  for (const model of uniqueModels) {
-    const retries = params.maxRetriesPerModel ?? 1;
-    for (let attempt = 0; attempt < retries; attempt++) {
-      const controller = new AbortController();
-      let timedOut = false;
-      const timeoutMs = 15000; // 15 seconds hard timeout for non-streaming
-      let timeoutId: NodeJS.Timeout | null = setTimeout(() => {
-        timedOut = true;
-        console.warn(`[GeminiResilience] Hard timeout of ${timeoutMs}ms exceeded on model '${model}'. Aborting...`);
-        try {
-          controller.abort(new Error(`Timeout of ${timeoutMs}ms exceeded on model '${model}'`));
-        } catch {}
-      }, timeoutMs);
-
-      const start = Date.now();
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: params.contents,
-          config: {
-            ...params.config,
-            abortSignal: controller.signal
-          }
-        });
-        console.log(`[GeminiResilience] Success on model '${model}' in ${Date.now() - start}ms`);
-        return response;
-      } catch (err: any) {
-        lastError = err;
-        const errMsg = err?.message || String(err);
-        const isTimeoutOrAbort = timedOut || controller.signal.aborted || err?.name === 'AbortError' || errMsg.includes('Timeout') || errMsg.includes('aborted');
-        const is503OrUnavailable = err?.status === 503 || errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('high demand');
-
-        console.warn(`[GeminiResilience] ${isTimeoutOrAbort ? 'TIMEOUT/ABORT' : 'Warning'} on model '${model}' (attempt ${attempt + 1}/${retries}): ${errMsg}`);
-
-        if (attempt < retries - 1 && !isTimeoutOrAbort && !is503OrUnavailable) {
-          await new Promise((r) => setTimeout(r, 200));
-        } else {
-          console.warn(`[GeminiResilience] Fast-falling back from '${model}' to next model in chain...`);
-          break; // Move to next fallback model immediately
-        }
-      } finally {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      }
-    }
-  }
-
-  throw lastError || new Error("All Gemini model requests failed after fast-fallback chain.");
-}
+// Server-side signed Cloudinary upload endpoint
 
 // Server-side signed Cloudinary upload endpoint
 app.post("/api/upload", async (req, res) => {
@@ -1306,22 +1118,21 @@ app.post("/api/coach/validate-methodology", async (req, res) => {
       });
     }
 
-    // Server-side Role Verification Gate: Look up actual user record from Firestore
+    // Server-side Role Verification Gate: Look up actual user record from Firestore using Firebase Admin SDK
     // Do NOT trust any client-supplied 'role' field in req.body
     let isVerifiedCoach = false;
     try {
-      const firestoreDb = (appletConfig as any).firestoreDatabaseId || "(default)";
-      const userDocUrl = `https://firestore.googleapis.com/v1/projects/${appletConfig.projectId}/databases/${firestoreDb}/documents/users/${encodeURIComponent(userId)}?key=${appletConfig.apiKey}`;
-      const userDocRes = await fetch(userDocUrl, { signal: AbortSignal.timeout(3000) });
-      if (userDocRes.ok) {
-        const userDocData: any = await userDocRes.json();
-        const firestoreRole = userDocData.fields?.role?.stringValue || userDocData.fields?.role?.value;
-        if (firestoreRole === "COACH") {
-          isVerifiedCoach = true;
+      if (adminDb) {
+        const userDoc = await adminDb.collection("users").doc(userId).get();
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          if (userData?.role === "COACH") {
+            isVerifiedCoach = true;
+          }
         }
       }
     } catch (authErr) {
-      console.error("Firestore user verification error:", authErr);
+      console.error("Firestore user verification error (Firebase Admin SDK):", authErr);
     }
 
     if (!isVerifiedCoach) {

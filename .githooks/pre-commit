@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Pre-commit hook: blocks commits containing hardcoded secrets or keys
+set -e
+
+SECRET_REGEX='AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{20,}|[0-9]{10,}-[a-z0-9]{20,}\.apps\.googleusercontent'
+
+# Check if git is available and if inside a git repository
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Check staged files
+  STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+  if [ -n "$STAGED_FILES" ]; then
+    MATCHES=$(echo "$STAGED_FILES" | xargs grep -rnE "$SECRET_REGEX" 2>/dev/null || true)
+    if [ -n "$MATCHES" ]; then
+      echo "❌ COMMIT REJECTED: Hardcoded API keys or client secrets detected in staged files!"
+      echo ""
+      echo "$MATCHES" | awk -F: '{print "  File: "$1", Line: "$2" (Match masked for security)"}'
+      echo ""
+      echo "Please remove all hardcoded keys and load them from environment variables instead."
+      exit 1
+    fi
+  fi
+else
+  # Fallback for standalone check: scan project files ignoring build/dist and ignored files
+  MATCHES=$(node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const pattern = /AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{20,}|[0-9]{10,}-[a-z0-9]{20,}\.apps\.googleusercontent/;
+    const ignoredDirs = new Set(["node_modules", ".git", ".aistudio", "dist", "build"]);
+    let found = [];
+    function scan(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!ignoredDirs.has(entry.name)) scan(path.join(dir, entry.name));
+        } else if (entry.isFile()) {
+          if (entry.name.startsWith(".env") && entry.name !== ".env.example") continue;
+          if (entry.name === "firebase-applet-config.json.local") continue;
+          const fullPath = path.join(dir, entry.name);
+          const lines = fs.readFileSync(fullPath, "utf8").split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            if (pattern.test(lines[i])) {
+              found.push(`${fullPath}:${i + 1}`);
+            }
+          }
+        }
+      }
+    }
+    scan(".");
+    if (found.length) {
+      console.log(found.join("\n"));
+      process.exit(1);
+    }
+  ' 2>&1 || true)
+  if [ -n "$MATCHES" ]; then
+    echo "❌ PRE-COMMIT CHECK FAILED: Secret pattern detected in repository:"
+    echo "$MATCHES"
+    exit 1
+  fi
+fi
+
+echo "✅ Pre-commit check passed: No hardcoded secrets detected."
+exit 0

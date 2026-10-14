@@ -4,7 +4,7 @@ import appletConfig from '../firebase-applet-config.json';
 import { loadLocalReferenceStandards } from '../src/services/eventStandardsService';
 
 const firebaseConfig = {
-  apiKey: appletConfig.apiKey,
+  apiKey: process.env.VITE_FIREBASE_API_KEY || '',
   authDomain: appletConfig.authDomain,
   projectId: appletConfig.projectId,
   storageBucket: appletConfig.storageBucket,
