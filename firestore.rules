@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Authentication and authorization helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isCoach() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        'role' in getUserData() &&
+        getUserData().role == 'COACH';
+    }
+
+    // Coach/staff del MISMO club que el atleta (reemplaza el isAssignedCoach viejo)
+    function isClubStaffOf(athleteId) {
+      return isCoach() && 
+        exists(/databases/$(database)/documents/users/$(athleteId)) &&
+        'clubId' in get(/databases/$(database)/documents/users/$(athleteId)).data &&
+        get(/databases/$(database)/documents/users/$(athleteId)).data.clubId != null &&
+        exists(/databases/$(database)/documents/clubs/$(get(/databases/$(database)/documents/users/$(athleteId)).data.clubId)) &&
+        'staffIds' in get(/databases/$(database)/documents/clubs/$(get(/databases/$(database)/documents/users/$(athleteId)).data.clubId)).data &&
+        request.auth.uid in get(/databases/$(database)/documents/clubs/$(get(/databases/$(database)/documents/users/$(athleteId)).data.clubId)).data.staffIds;
+    }
+
+    // User profiles & telemetry
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isClubStaffOf(userId) || isCoach();
+      allow write: if isOwner(userId) || isClubStaffOf(userId);
+
+      // Explicit matches for chatThreads and messages subcollections
+      match /chatThreads/{threadId} {
+        allow read, write: if isOwner(userId) || isClubStaffOf(userId);
+
+        match /messages/{messageId} {
+          allow read, write: if isOwner(userId) || isClubStaffOf(userId);
+        }
+      }
+
+      // Legacy direct messages subcollection
+      match /messages/{messageId} {
+        allow read, write: if isOwner(userId) || isClubStaffOf(userId);
+      }
+
+      // Video analyses subcollection
+      match /videoAnalyses/{analysisId} {
+        allow read, write: if isOwner(userId) || isClubStaffOf(userId);
+      }
+
+      // Files subcollection
+      match /files/{fileId} {
+        allow read, write: if isOwner(userId) || isClubStaffOf(userId);
+      }
+
+      // Recursive wildcard covering all other nested subcollections at any depth
+      match /{allPaths=**} {
+        allow read, write: if isOwner(userId) || isClubStaffOf(userId);
+      }
+    }
+
+    // Clubs
+    match /clubs/{clubId} {
+      allow read: if isAuthenticated();
+      allow write: if isCoach();
+    }
+
+    // Athlete periodization plans (Macrocycles & Mesocycles)
+    match /athletePeriodizationPlans/{athleteId} {
+      allow read: if isOwner(athleteId) || isClubStaffOf(athleteId);
+      allow write: if isOwner(athleteId) || isClubStaffOf(athleteId);
+    }
+
+    // Competition calendars & taper dates
+    match /competitionCalendar/{athleteId} {
+      allow read: if isOwner(athleteId) || isClubStaffOf(athleteId);
+      allow write: if isOwner(athleteId) || isClubStaffOf(athleteId);
+    }
+
+    // BLOQUEADO para todo cliente. Solo el backend (Admin SDK, sin reglas de
+    // seguridad de por medio) escribe acá, extrayendo la fase directamente de la
+    // conversación. Ningún atleta ni coach escribe esto por fuera del chat.
+    match /inferredTrainingContext/{athleteId} {
+      allow read: if isOwner(athleteId) || isClubStaffOf(athleteId);
+      allow write: if false;
+    }
+
+    // Scientific evidence repository (cached peer-reviewed literature)
+    match /scientificEvidence/{evidenceId} {
+      allow read: if isAuthenticated();
+      allow write: if isCoach();
+    }
+
+    // Curated event reference standards and biomechanical benchmarks
+    match /eventReferenceStandards/{standardId} {
+      allow read: if isAuthenticated();
+      allow write: if isCoach();
+    }
+  }
+}
