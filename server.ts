@@ -4,7 +4,8 @@ import fs from "fs";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { streamChat, generateJson, StreamResult } from "./src/services/llmProvider";
-import pdfParse from "pdf-parse";
+// @ts-ignore
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { 
   fetchAllScientificLiteratureRaw, 
   weighScientificLiterature,
@@ -211,16 +212,18 @@ if (!apiKey) {
 }
 
 // Server-side signed Cloudinary upload endpoint
-
-// Server-side signed Cloudinary upload endpoint
 app.post("/api/upload", async (req, res) => {
   try {
     const { base64Data, fileName, fileType, userId } = req.body;
+    const authId = userId || (req.headers["x-user-id"] as string);
+    if (!authId) {
+      return res.status(401).json({ error: "Unauthorized: Missing authenticated userId." });
+    }
     if (!base64Data || !fileName) {
       return res.status(400).json({ error: "Missing file payload (base64Data or fileName)." });
     }
 
-    const uploaded = await uploadToCloudinary(base64Data, fileName, fileType, userId || 'athlete');
+    const uploaded = await uploadToCloudinary(base64Data, fileName, fileType, authId);
     res.json(uploaded);
   } catch (err: any) {
     console.error("[API Upload] Cloudinary upload error:", err);
@@ -342,8 +345,8 @@ app.post(["/api/chat", "/api/aria"], async (req, res) => {
 
     let periodizationSection = "";
     if (isClubAffiliated) {
-      let athletePlan: AthletePeriodizationPlan = inputPlan || getDefaultPeriodizationPlan(athleteId);
-      let athleteCalendar: CompetitionCalendar = inputCalendar || getDefaultCompetitionCalendar(athleteId);
+      let athletePlan: AthletePeriodizationPlan | null = inputPlan || null;
+      let athleteCalendar: CompetitionCalendar | null = inputCalendar || null;
 
       // Server-side authoritative fresh fetch of formal periodization & calendar with timeout race
       try {
@@ -360,10 +363,11 @@ app.post(["/api/chat", "/api/aria"], async (req, res) => {
         console.warn("[Periodization] Error fetching fresh plan/calendar:", calErr);
       }
 
-      const periodizationContext = calculatePeriodizationContext(athletePlan, athleteCalendar, new Date());
-      const { planPeriodizacionText, calendarioCompetenciaText } = formatPeriodizationPromptContext(periodizationContext);
+      if (athletePlan && athleteCalendar) {
+        const periodizationContext = calculatePeriodizationContext(athletePlan, athleteCalendar, new Date());
+        const { planPeriodizacionText, calendarioCompetenciaText } = formatPeriodizationPromptContext(periodizationContext);
 
-      periodizationSection = `CLUB STATUS:
+        periodizationSection = `CLUB STATUS:
 afiliado (Club ID: ${athleteProfile.clubId})
 
 PLAN DE PERIODIZACIÓN FORMAL DEL CLUB:
@@ -371,6 +375,13 @@ ${planPeriodizacionText}
 
 CALENDARIO DE COMPETENCIAS FORMAL DEL CLUB & ESTADO DE TAPER:
 ${calendarioCompetenciaText}`;
+      } else {
+        periodizationSection = `CLUB STATUS:
+afiliado (Club ID: ${athleteProfile.clubId})
+
+PLAN DE PERIODIZACIÓN FORMAL DEL CLUB:
+El atleta pertenece al club ${athleteProfile.clubId}, pero aún no tiene un plan de periodización formal cargado por el cuerpo técnico del club. NO inventes un plan predeterminado. Si se discuten objetivos o fases, recuerda que la programación formal debe ser establecida por su entrenador de club.`;
+      }
     } else {
       const storedInferred = inferredContextStore.get(athleteId);
       const inferred = req.body.inferredTrainingContext || athleteProfile.inferredTrainingContext || storedInferred;
@@ -565,35 +576,23 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
       historicalTurns = allInputMessages.slice(0, allInputMessages.length - 1);
     }
 
-    // Convert EVERY previous message in the session to Gemini multi-turn format with strictly alternating roles ('user' / 'model')
-    const contents: any[] = [];
+    // Convert previous messages in the session to OpenAI messages format
+    const llmMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
     
     for (const hMsg of historicalTurns) {
-      const role = hMsg.role === 'assistant' || hMsg.role === 'model' ? 'model' : 'user';
-      const cleanContent = (hMsg.content || '').trim() || ' ';
-      
-      // If previous turn has the same role, merge parts to preserve strict alternating roles for Gemini
-      if (contents.length > 0 && contents[contents.length - 1].role === role) {
-        contents[contents.length - 1].parts.push({ text: cleanContent });
-      } else {
-        contents.push({
+      const role = hMsg.role === 'assistant' || hMsg.role === 'model' ? 'assistant' : 'user';
+      const cleanContent = (hMsg.content || '').trim();
+      if (cleanContent) {
+        llmMessages.push({
           role,
-          parts: [{ text: cleanContent }]
+          content: cleanContent
         });
       }
     }
 
-    // If historical turns start with 'model', prepend an initial user intro turn so conversation starts with 'user'
-    if (contents.length > 0 && contents[0].role === 'model') {
-      contents.unshift({
-        role: 'user',
-        parts: [{ text: "Hello coach, initiating tactical training session." }]
-      });
-    }
-
     // 12. File / Attachment Pipeline Processing
-    const currentParts: any[] = [];
     let hasMedicalExam = false;
+    let extractedFilesText = "";
     const currentFilesToProcess: Array<{ url?: string; base64Data?: string; type?: string; name?: string; size?: number }> = [];
 
     // Extract files from current turn or request body
@@ -637,29 +636,8 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
             `[ARIA COACHING DIRECTIVE]: Examine this Google Drive document reference in correlation with the athlete's biometrics, periodization cycle, and training logs.`
           ].filter(Boolean).join('\n');
 
-          currentParts.push({ text: driveDocInfo });
+          extractedFilesText += `\n\n${driveDocInfo}`;
           parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: driveDocInfo.length, format: 'google_drive_reference' });
-
-          const thumbUrl = (fileObj as any).thumbnailUrl;
-          if (thumbUrl && typeof thumbUrl === 'string' && thumbUrl.startsWith('http')) {
-            try {
-              const thumbRes = await fetch(thumbUrl, { signal: AbortSignal.timeout(3000) });
-              if (thumbRes.ok) {
-                const arrayBuffer = await thumbRes.arrayBuffer();
-                const thumbB64 = Buffer.from(arrayBuffer).toString('base64');
-                const thumbMime = thumbRes.headers.get('content-type')?.split(';')[0] || 'image/jpeg';
-                currentParts.push({
-                  inlineData: {
-                    data: thumbB64,
-                    mimeType: thumbMime
-                  }
-                });
-                parsedFilesLog.push({ name: `${fileName}_thumbnail`, type: thumbMime, sizeOrChars: thumbB64.length, format: 'inline_data_base64' });
-              }
-            } catch (thumbErr) {
-              console.warn(`[Google Drive] Could not fetch thumbnail for ${fileName}:`, thumbErr);
-            }
-          }
           continue;
         }
 
@@ -692,27 +670,30 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
         }
 
         if (isText) {
-          currentParts.push({
-            text: `[Attached Document: ${fileName}]\n\n${textContent}`
-          });
+          extractedFilesText += `\n\n[Attached Document: ${fileName}]\n\n${textContent}`;
           parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: textContent.length, format: 'inline_text' });
-        } else if (base64) {
-          currentParts.push({
-            inlineData: {
-              data: base64,
-              mimeType: mime
+        } else if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
+          if (base64) {
+            try {
+              const pdfBuffer = Buffer.from(base64, 'base64');
+              const pdfData = await pdfParse(pdfBuffer);
+              const pdfText = (pdfData.text || '').trim();
+              extractedFilesText += `\n\n[Attached PDF Document: ${fileName} (${pdfData.numpages || 1} pages)]\n${pdfText || '[PDF parsed: no text found]'}`;
+              parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: pdfText.length, format: 'pdf_extracted_text' });
+              hasMedicalExam = true;
+            } catch (pdfErr: any) {
+              console.warn(`[PDF Parser] Error parsing ${fileName}:`, pdfErr);
+              extractedFilesText += `\n\n[Attached Document: ${fileName} - PDF text extraction encountered issue: ${pdfErr.message}]`;
             }
-          });
-          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'inline_data_base64' });
-          if (mime.startsWith('image/') || mime === 'application/pdf') {
-            hasMedicalExam = true;
           }
+        } else if (mime.startsWith('image/')) {
+          hasMedicalExam = true;
+          extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image attached. Note: Vision analysis requires Gemini vision integration. Biomechanical and sports medicine medical advisory protocols applied.]`;
+          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_flagged_for_vision' });
         }
       } catch (e: any) {
         console.error(`[Multimodal] Error processing file "${fileObj.name || fileObj.url}":`, e);
-        currentParts.push({
-          text: `[Note: Attached file "${fileObj.name || 'document'}" could not be loaded: ${e.message}]`
-        });
+        extractedFilesText += `\n\n[Note: Attached file "${fileObj.name || 'document'}" could not be loaded: ${e.message}]`;
       }
     }
 
@@ -734,37 +715,20 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
 ${staticContextBlob}
 
 CURRENT ATHLETE QUERY:
-${currentTurnMsg.content || userQuery}${fileAnalysisMandate}${hasMedicalExam ? '\n\n[NOTE: Athlete has attached medical exam/radiograph. Follow medical disclaimer & sports-medicine review protocols.]' : ''}`;
+${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate}${hasMedicalExam ? '\n\n[NOTE: Athlete has attached medical exam/radiograph/image. Follow medical disclaimer & sports-medicine review protocols.]' : ''}`;
 
-    currentParts.unshift({ text: finalUserTurnText });
-
-    // Append current user turn
-    if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
-      contents[contents.length - 1].parts.push(...currentParts);
-    } else {
-      contents.push({
-        role: 'user',
-        parts: currentParts
-      });
-    }
+    llmMessages.push({
+      role: 'user',
+      content: finalUserTurnText
+    });
 
     // Stage 3: Context Assembled Logging
     console.log(`[ARIA Stage 3: Context Assembled] Profile: ${athleteProfile.name || athleteId}, Event: ${primaryEvent}, Historical turns: ${historicalTurns.length}, Literature count: ${filteredLiterature.length}, Static context length: ${staticContextBlob.length} chars, Prompt length: ${finalUserTurnText.length} chars`);
 
-    // Stage 4: Sent to Gemini Logging
-    console.log(`[ARIA Stage 4: Sent to Gemini] Model: gemini-3.1-flash-lite (fallbacks: [gemini-3.8-flash, gemini-flash-latest]), Total conversation turns: ${contents.length}`);
-    console.log(`[ARIA Stage 4: Sent to Gemini] Assembled prompt preview (latest turn):\n${finalUserTurnText.slice(0, 400)}...\n[Total Assembled Turn Chars]: ${finalUserTurnText.length}`);
-    console.log(`[ARIA Stage 4: Sent to Gemini] Full Request Payload Summary:\n`, JSON.stringify({
-      preferredModel: "gemini-3.1-flash-lite",
-      temperature: 0.2,
-      turnsCount: contents.length,
-      turns: contents.map((c, i) => ({
-        index: i,
-        role: c.role,
-        partsCount: c.parts.length,
-        parts: c.parts.map((p: any) => p.text ? `[Text: ${p.text.length} chars, snippet: "${p.text.slice(0, 80).replace(/\n/g, ' ')}..."]` : `[InlineData: ${p.inlineData?.mimeType}, base64 chars: ${p.inlineData?.data?.length}]`)
-      }))
-    }, null, 2));
+    // Stage 4: Sent to LLM Provider Logging
+    const activeModel = process.env.LLM_MODEL || 'deepseek-chat';
+    console.log(`[ARIA Stage 4: Sent to LLM Provider] Model: ${activeModel}, Total conversation turns: ${llmMessages.length}`);
+    console.log(`[ARIA Stage 4: Sent to LLM Provider] Assembled prompt preview (latest turn):\n${finalUserTurnText.slice(0, 400)}...\n[Total Assembled Turn Chars]: ${finalUserTurnText.length}`);
 
     if (isAborted) {
       console.log("[ARIA Pipeline] Aborted before starting SSE response. Exiting.");
@@ -784,39 +748,24 @@ ${currentTurnMsg.content || userQuery}${fileAnalysisMandate}${hasMedicalExam ? '
     const llmStart = Date.now();
     let streamResult: StreamResult;
     try {
-      streamResult = await callGeminiStreamWithResilience(
-        {
-          preferredModel: "gemini-3.1-flash-lite",
-          fallbackModels: ["gemini-3.8-flash", "gemini-flash-latest"],
-          athleteId: athleteId,
-          abortSignal: requestAbortController.signal,
-          contents: contents,
-          config: {
-            systemInstruction: STRIDES_SYSTEM_PROMPT,
-            temperature: 0.2,
-            tools: [{
-              functionDeclarations: [
-                UPDATE_ATHLETE_DATA_TOOL, 
-                UPDATE_PERIODIZATION_PLAN_TOOL,
-                UPDATE_INFERRED_TRAINING_CONTEXT_TOOL,
-                UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL
-              ]
-            }]
-          }
-        },
-        (textChunk: string) => {
+      streamResult = await streamChat({
+        system: STRIDES_SYSTEM_PROMPT,
+        messages: llmMessages,
+        tools: ARIA_TOOLS,
+        signal: requestAbortController.signal,
+        onChunk: (textChunk: string) => {
           if (!isAborted && !res.writableEnded) {
             res.write(`data: ${JSON.stringify({ type: 'chunk', text: textChunk })}\n\n`);
           }
         }
-      );
+      });
     } catch (llmErr: any) {
       if (isAborted || requestAbortController.signal.aborted) {
         console.log("[ARIA Stage 5: ABORTED] Request was cancelled by client. Halting SSE.");
         return;
       }
-      console.error("[ARIA Stage 5: FAILED] Error calling Gemini streaming API:", llmErr);
-      const errMsg = llmErr?.message || String(llmErr) || "Gemini streaming API failure";
+      console.error("[ARIA Stage 5: FAILED] Error calling LLM streaming API:", llmErr);
+      const errMsg = llmErr?.message || String(llmErr) || "LLM streaming API failure";
       
       if (!res.writableEnded) {
         // Surface real error honestly to the user — NEVER return a fabricated fallback string
@@ -830,7 +779,7 @@ ${currentTurnMsg.content || userQuery}${fileAnalysisMandate}${hasMedicalExam ? '
     }
 
     if (isAborted || requestAbortController.signal.aborted) {
-      console.log("[ARIA Pipeline] Aborted after Gemini stream. Skipping tool execution and database writes.");
+      console.log("[ARIA Pipeline] Aborted after LLM stream. Skipping tool execution and database writes.");
       return;
     }
 
@@ -1001,7 +950,12 @@ ${currentTurnMsg.content || userQuery}${fileAnalysisMandate}${hasMedicalExam ? '
       return;
     }
 
-    res.write(`data: ${JSON.stringify({ type: 'done', text: streamResult.text })}\n\n`);
+    const primaryCall = streamResult.functionCalls?.[0];
+    res.write(`data: ${JSON.stringify({ 
+      type: 'done', 
+      text: streamResult.text,
+      functionCall: primaryCall ? { name: primaryCall.name, arguments: primaryCall.arguments || primaryCall.args } : undefined
+    })}\n\n`);
     res.end();
   } catch (error: any) {
     if (isAborted) {
@@ -1042,17 +996,12 @@ Session Title: ${title || 'Tactical Session'}
 Conversation:
 ${conversationSnippet}`;
 
-    const response = await callGeminiWithResilience({
-      preferredModel: "gemini-flash-latest",
-      fallbackModels: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
-      contents: prompt,
-      config: {
-        systemInstruction: "You are a concise athletic telemetry logger. Output only 1-2 factual sentences capturing key athlete metrics, kinetic observations, or training cycle priorities.",
-        temperature: 0.1
-      }
+    const response = await generateJson<{ summary?: string }>({
+      system: "You are a concise athletic telemetry logger. Output JSON with a 'summary' property containing 1-2 factual sentences capturing key athlete metrics, kinetic observations, or training cycle priorities.",
+      user: prompt
     });
 
-    res.json({ summary: response.text?.trim() || "" });
+    res.json({ summary: response.summary || response.text?.trim() || "" });
   } catch (err: any) {
     console.warn("Thread summarize error:", err);
     res.json({ summary: "" });
@@ -1084,14 +1033,9 @@ Rules:
 Exchange:
 ${textToSummarize}`;
 
-    const response = await callGeminiWithResilience({
-      preferredModel: "gemini-flash-latest",
-      fallbackModels: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
-      contents: prompt,
-      config: {
-        systemInstruction: "You are a concise title generator. Return only the 3-6 word title without formatting, punctuation, or quotation marks.",
-        temperature: 0.2
-      }
+    const response = await generateJson<{ title?: string }>({
+      system: "You are a concise title generator. Return JSON with a 'title' property containing a 3 to 6 word title without formatting, punctuation, or quotation marks.",
+      user: prompt
     });
 
     let cleanTitle = response.text?.trim().replace(/^["'`]|["'`]$/g, '').replace(/[.:;]$/, '') || "";
@@ -1189,28 +1133,18 @@ Respond with JSON:
   "unverifiedClaims": ["claim 2 (unverified proprietary)", ...]
 }`;
 
-    const validationResponse = await callGeminiWithResilience({
-      preferredModel: "gemini-flash-latest",
-      fallbackModels: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
-      contents: extractionPrompt,
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.1
-      }
+    const validationResponse = await generateJson<any>({
+      system: "You are a Sports Biomechanics Peer-Review Validation Engine. Respond strictly with valid JSON.",
+      user: extractionPrompt
     });
 
     let result = {
-      validationStatus: 'PARTIALLY_VALIDATED',
-      verifiedClaims: [],
-      unverifiedClaims: []
+      validationStatus: validationResponse.validationStatus || 'PARTIALLY_VALIDATED',
+      verifiedClaims: validationResponse.verifiedClaims || [],
+      unverifiedClaims: validationResponse.unverifiedClaims || []
     };
 
-    try {
-      if (validationResponse.text) {
-        result = JSON.parse(validationResponse.text);
-      }
-    } catch {
-      // Fallback structured result
+    if (result.verifiedClaims.length === 0 && result.unverifiedClaims.length === 0) {
       result = {
         validationStatus: 'PARTIALLY_VALIDATED',
         verifiedClaims: [`Methodology ingested for ${title || 'Coach System'}`],
@@ -1228,7 +1162,11 @@ Respond with JSON:
 // Endpoint for 48-Hour Cloudinary Asset Cleanup
 app.post("/api/cloudinary/destroy", async (req, res) => {
   try {
-    const { publicId, resourceType } = req.body;
+    const { publicId, resourceType, userId } = req.body;
+    const authId = userId || (req.headers["x-user-id"] as string);
+    if (!authId) {
+      return res.status(401).json({ error: "Unauthorized: Missing authenticated userId." });
+    }
     if (!publicId) {
       return res.status(400).json({ error: "Missing publicId parameter." });
     }
@@ -1291,16 +1229,21 @@ app.post("/api/reference-standards/sync", async (req, res) => {
 });
 
 // GET athlete periodization plan and current context
-app.get("/api/periodization/:athleteId", (req, res) => {
+app.get("/api/periodization/:athleteId", async (req, res) => {
   try {
     const athleteId = req.params.athleteId;
-    const plan = getDefaultPeriodizationPlan(athleteId);
-    const calendar = getDefaultCompetitionCalendar(athleteId);
-    const context = calculatePeriodizationContext(plan, calendar, new Date());
+    if (!athleteId) {
+      return res.status(401).json({ error: "Unauthorized: Missing athleteId parameter." });
+    }
+    const [plan, calendar] = await Promise.all([
+      getAthletePeriodizationPlan(athleteId),
+      getCompetitionCalendar(athleteId)
+    ]);
+    const context = (plan && calendar) ? calculatePeriodizationContext(plan, calendar, new Date()) : null;
     res.json({
       success: true,
-      plan,
-      calendar,
+      plan: plan || null,
+      calendar: calendar || null,
       context
     });
   } catch (err: any) {

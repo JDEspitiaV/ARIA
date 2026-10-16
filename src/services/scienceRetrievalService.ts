@@ -691,6 +691,6 @@ export async function getWeighedScientificContext(query: string): Promise<string
   }
 
   return filtered
-    .map(doc => `[${doc.source}] ${doc.belowThreshold ? '[Below-Threshold, Best Available] ' : ''}${doc.title} (${doc.year}). DOI: ${doc.doi} | Score: ${doc.score}`)
+    .map(doc => `[${doc.source}] ${doc.belowThreshold ? '[Below-Threshold, Best Available] ' : ''}${doc.title} (${doc.year}). ${doc.doi ? `DOI: ${doc.doi} | ` : ''}Score: ${doc.score}`)
     .join('\n');
 }

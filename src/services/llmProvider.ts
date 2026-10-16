@@ -43,10 +43,13 @@ function getOpenAIClient(): OpenAI {
   if (!apiKey) {
     throw new Error('FATAL: LLM_API_KEY environment variable is missing.');
   }
-  const baseURL = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
+  let rawBase = (process.env.LLM_BASE_URL || 'https://api.deepseek.com').trim().replace(/\/+$/, '');
+  if (rawBase.includes('tokenharbor') && !rawBase.endsWith('/v1')) {
+    rawBase = `${rawBase}/v1`;
+  }
   return new OpenAI({
     apiKey,
-    baseURL
+    baseURL: rawBase
   });
 }
 
@@ -64,7 +67,12 @@ export async function streamChat({
 }: StreamChatParams): Promise<StreamResult> {
   const client = getOpenAIClient();
   const primaryModel = preferredModel || process.env.LLM_MODEL || 'deepseek-chat';
-  const fallbackModel = process.env.LLM_FALLBACK_MODEL;
+  let fallbackModel = process.env.LLM_FALLBACK_MODEL;
+  if (!fallbackModel || fallbackModel === primaryModel) {
+    if (primaryModel === 'deepseek-v4.1-flash:free') {
+      fallbackModel = 'deepseek-v4-flash:free';
+    }
+  }
 
   const models = [primaryModel];
   if (fallbackModel && fallbackModel !== primaryModel) {
@@ -197,6 +205,13 @@ export async function streamChat({
           }
         }
 
+        if (timedOut || controller.signal.aborted) {
+          throw new Error(`Timeout of ${firstChunkTimeoutMs}ms exceeded waiting for first chunk on model '${model}'`);
+        }
+        if (!yieldedAnyChunk) {
+          throw new Error(`Empty stream received from model '${model}' (0 chunks yielded).`);
+        }
+
         const parsedFunctionCalls: Array<{ name: string; arguments: any; args: any }> = [];
         for (const idx of Object.keys(accumulatedToolCalls).map(Number).sort((a, b) => a - b)) {
           const rawCall = accumulatedToolCalls[idx];
@@ -244,7 +259,7 @@ export async function streamChat({
           };
         }
 
-        if (attempt < maxAttempts - 1 && isRetriable && !isTimeoutOrAbort) {
+        if (attempt < maxAttempts - 1 && isRetriable) {
           await new Promise((r) => setTimeout(r, 500));
         } else {
           console.warn(`[LLMProvider] Moving to next fallback model if available...`);
@@ -276,7 +291,12 @@ export async function generateJson<T = any>({
 }: GenerateJsonParams): Promise<T & { text: string }> {
   const client = getOpenAIClient();
   const primaryModel = specifiedModel || process.env.LLM_MODEL || 'deepseek-chat';
-  const fallbackModel = process.env.LLM_FALLBACK_MODEL;
+  let fallbackModel = process.env.LLM_FALLBACK_MODEL;
+  if (!fallbackModel || fallbackModel === primaryModel) {
+    if (primaryModel === 'deepseek-v4.1-flash:free') {
+      fallbackModel = 'deepseek-v4-flash:free';
+    }
+  }
 
   const models = [primaryModel];
   if (fallbackModel && fallbackModel !== primaryModel) {

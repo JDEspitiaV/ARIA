@@ -621,14 +621,18 @@ export async function getThreadMessages(userId: string, threadId: string): Promi
   const activeUserId = auth.currentUser?.uid || userId;
   try {
     const msgsRef = collection(db, 'users', activeUserId, 'chatThreads', threadId, 'messages');
-    const q = query(msgsRef, orderBy('timestamp', 'asc'), limit(200));
+    const q = query(msgsRef, orderBy('timestamp', 'desc'), limit(200));
     const snapshot = await getDocs(q);
     const messages: ChatMessage[] = [];
     snapshot.forEach(docSnap => {
       messages.push(docSnap.data() as ChatMessage);
     });
-    // Ensure chronological ordering with date timestamp tie-breakers
-    messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    // Reverse to chronological order and ensure robust timestamp tie-breaker
+    messages.sort((a, b) => {
+      const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return timeA - timeB;
+    });
     return messages;
   } catch (err: any) {
     handleFirestoreError(err, OperationType.GET, `users/${activeUserId}/chatThreads/${threadId}/messages`);
