@@ -26,7 +26,7 @@ import {
   UPDATE_PERIODIZATION_PLAN_TOOL,
   UPDATE_INFERRED_TRAINING_CONTEXT_TOOL,
   UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL
-} from "./src/services/geminiService";
+} from "./src/services/ariaTools";
 import {
   getDefaultPeriodizationPlan,
   getDefaultCompetitionCalendar,
@@ -44,6 +44,9 @@ import {
   type App as AdminApp 
 } from "firebase-admin/app";
 import { 
+  getAuth as getAdminAuth 
+} from "firebase-admin/auth";
+import { 
   getFirestore as getAdminFirestore, 
   type Firestore as AdminFirestore 
 } from "firebase-admin/firestore";
@@ -59,6 +62,7 @@ dotenv.config();
 const firebaseProjectId = process.env.VITE_FIREBASE_PROJECT_ID || appletConfig.projectId;
 let adminApp: AdminApp | null = null;
 let adminDb: AdminFirestore | null = null;
+let adminAuth: any = null;
 
 try {
   if (!getAdminApps().length) {
@@ -69,6 +73,7 @@ try {
     adminApp = getAdminApp();
   }
   adminDb = getAdminFirestore(adminApp);
+  adminAuth = getAdminAuth(adminApp);
 } catch (adminErr) {
   console.warn("[Firebase-Admin] Initialization warning:", adminErr);
 }
@@ -95,6 +100,31 @@ function loadPersistedInferredContexts() {
     console.warn('[Backend-Context] Could not load persisted inferred contexts from disk:', err);
   }
 }
+
+// Auth Middleware
+const authMiddleware = async (req: any, res: any, next: any) => {
+  if (req.path === '/api/aria/health') return next();
+  if (req.path.startsWith('/api/cron/')) {
+    if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    return next();
+  }
+  
+  const token = req.headers.authorization?.split('Bearer ')[1];
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    if (!adminAuth) throw new Error('Firebase Admin Auth not initialized');
+    const decodedToken = await adminAuth.verifyIdToken(token);
+    req.uid = decodedToken.uid;
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+};
+
+app.use('/api', authMiddleware);
 
 function persistInferredContextsToDisk() {
   try {
@@ -688,7 +718,7 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
           }
         } else if (mime.startsWith('image/')) {
           hasMedicalExam = true;
-          extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image attached. Note: Vision analysis requires Gemini vision integration. Biomechanical and sports medicine medical advisory protocols applied.]`;
+          extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image attached. Note: Vision analysis is currently unsupported in this configuration.]`;
           parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_flagged_for_vision' });
         }
       } catch (e: any) {

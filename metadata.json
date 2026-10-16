@@ -2,5 +2,5 @@
   "name": "STRIDES High-Performance Chat Assistant",
   "description": "System for Tactical Race Insight & Data Extraction (STRIDES) beta high-performance chat assistant.",
   "requestFramePermissions": ["microphone"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
