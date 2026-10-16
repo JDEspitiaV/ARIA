@@ -103,8 +103,8 @@ function loadPersistedInferredContexts() {
 
 // Auth Middleware
 const authMiddleware = async (req: any, res: any, next: any) => {
-  if (req.path === '/api/aria/health') return next();
-  if (req.path.startsWith('/api/cron/')) {
+  if (req.path === '/aria/health') return next();
+  if (req.path.startsWith('/cron/')) {
     if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -123,8 +123,6 @@ const authMiddleware = async (req: any, res: any, next: any) => {
     res.status(401).json({ error: 'Unauthorized' });
   }
 };
-
-app.use('/api', authMiddleware);
 
 function persistInferredContextsToDisk() {
   try {
@@ -235,6 +233,8 @@ async function saveInferredTrainingContextBackend(athleteId: string, context: In
 const app = express();
 // Increase body size limit for base64 file payloads during Cloudinary staging
 app.use(express.json({ limit: '25mb' }));
+
+app.use('/api', authMiddleware);
 
 const apiKey = process.env.LLM_API_KEY;
 if (!apiKey) {
@@ -1002,9 +1002,34 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
   }
 });
 
+// Helper: Verify if user has access to athlete
+async function verifyAthleteAccess(uid: string, athleteId: string) {
+  if (uid === athleteId) return true;
+  if (!adminDb) return false;
+  
+  const userDoc = await adminDb.collection('users').doc(uid).get();
+  if (!userDoc.exists) return false;
+  const userData = userDoc.data();
+  if (userData?.role !== 'COACH') return false;
+  
+  const athleteDoc = await adminDb.collection('users').doc(athleteId).get();
+  if (!athleteDoc.exists) return false;
+  const athleteData = athleteDoc.data();
+  if (!athleteData?.clubId) return false;
+  
+  const clubDoc = await adminDb.collection('clubs').doc(athleteData.clubId).get();
+  if (!clubDoc.exists) return false;
+  const clubData = clubDoc.data();
+  return clubData?.staffIds?.includes(uid);
+}
+
 // Endpoint: Retrieve Inferred Training Context for an Athlete (Server-managed)
-app.get("/api/inferred-context/:athleteId", (req, res) => {
+app.get("/api/inferred-context/:athleteId", async (req, res) => {
   const { athleteId } = req.params;
+  const uid = (req as any).uid;
+  if (!(await verifyAthleteAccess(uid, athleteId))) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const data = inferredContextStore.get(athleteId) || null;
   res.json({ athleteId, inferredTrainingContext: data });
 });
@@ -1262,8 +1287,9 @@ app.post("/api/reference-standards/sync", async (req, res) => {
 app.get("/api/periodization/:athleteId", async (req, res) => {
   try {
     const athleteId = req.params.athleteId;
-    if (!athleteId) {
-      return res.status(401).json({ error: "Unauthorized: Missing athleteId parameter." });
+    const uid = (req as any).uid;
+    if (!(await verifyAthleteAccess(uid, athleteId))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     const [plan, calendar] = await Promise.all([
       getAthletePeriodizationPlan(athleteId),
