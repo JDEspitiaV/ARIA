@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, BookOpen, Search, CheckCircle, FileText, Sparkles, Activity } from 'lucide-react';
 import Markdown from 'react-markdown';
+import { authFetch } from '../lib/authFetch';
 
 interface EventStandardSummary {
   id: string;
@@ -37,7 +38,7 @@ export const EventStandardsModal: React.FC<EventStandardsModalProps> = ({ isOpen
     const fetchStandards = async () => {
       setIsLoading(true);
       try {
-        const res = await fetch('/api/reference-standards');
+        const res = await authFetch('/api/reference-standards');
         const data = await res.json();
         if (data.standards) {
           setStandards(data.standards);
@@ -57,7 +58,7 @@ export const EventStandardsModal: React.FC<EventStandardsModalProps> = ({ isOpen
 
   const loadStandardDetail = async (id: string) => {
     try {
-      const res = await fetch(`/api/reference-standards/${id}`);
+      const res = await authFetch(`/api/reference-standards/${id}`);
       const data = await res.json();
       if (data.standard) {
         setSelectedStandard(data.standard);

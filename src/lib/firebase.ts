@@ -41,6 +41,7 @@ import {
   InferredTrainingContext
 } from '../types';
 import appletConfig from '../../firebase-applet-config.json';
+import { authFetch } from './authFetch';
 
 const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
 const procEnv = (typeof process !== 'undefined' && process.env) || {};
@@ -823,7 +824,7 @@ export async function uploadChatFile(uid: string, file: File): Promise<AttachedF
     reader.readAsDataURL(file);
   });
 
-  const res = await fetch('/api/upload', {
+  const res = await authFetch('/api/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -887,7 +888,7 @@ export async function checkAndCleanupExpiredFiles(userId: string): Promise<numbe
             if (isExpired && f.publicId && !f.expired) {
               try {
                 // Call server endpoint to destroy from Cloudinary
-                await fetch('/api/cloudinary/destroy', {
+                await authFetch('/api/cloudinary/destroy', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ 

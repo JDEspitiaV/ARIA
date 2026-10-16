@@ -43,6 +43,7 @@ import {
   requestDriveAccessToken
 } from '../lib/firebase';
 import { showGoogleDrivePicker } from '../lib/googlePicker';
+import { authFetch } from '../lib/authFetch';
 
 /**
  * ============================================================================
@@ -406,7 +407,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
   useEffect(() => {
     if (activeThreadId) {
       setIsPreloading(true);
-      fetch('/api/context/preload', {
+      authFetch('/api/context/preload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ athleteProfile: athlete, activeThreadId })
@@ -800,7 +801,7 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       setStatusLog('Sintetizando prescripción táctica y salud estructural...');
 
       // Call Express server-side backend API route `/api/chat` with AbortController signal
-      const res = await fetch('/api/chat', {
+      const res = await authFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: abortController.signal,
@@ -1028,7 +1029,7 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
 
         // Auto-generate concise 3-6 word title for this new thread after first exchange
         if (updatedChat.length <= 3) {
-          fetch('/api/thread/generate-title', {
+          authFetch('/api/thread/generate-title', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1057,7 +1058,7 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
 
         // Periodically summarize key facts asynchronously for cross-session continuity
         if (updatedChat.length >= 2 && updatedChat.length % 2 === 0) {
-          fetch('/api/thread/summarize', {
+          authFetch('/api/thread/summarize', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ messages: updatedChat })

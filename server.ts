@@ -1,6 +1,8 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
+import http from "http";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { streamChat, generateJson, StreamResult } from "./src/services/llmProvider";
@@ -105,7 +107,14 @@ function loadPersistedInferredContexts() {
 const authMiddleware = async (req: any, res: any, next: any) => {
   if (req.path === '/aria/health') return next();
   if (req.path.startsWith('/cron/')) {
-    if (req.headers['x-cron-secret'] !== process.env.CRON_SECRET) {
+    const expectedSecret = process.env.CRON_SECRET;
+    const providedSecret = req.headers['x-cron-secret'];
+    if (!expectedSecret || typeof providedSecret !== 'string') {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const a = Buffer.from(providedSecret);
+    const b = Buffer.from(expectedSecret);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     return next();
@@ -244,8 +253,8 @@ if (!apiKey) {
 // Server-side signed Cloudinary upload endpoint
 app.post("/api/upload", async (req, res) => {
   try {
-    const { base64Data, fileName, fileType, userId } = req.body;
-    const authId = userId || (req.headers["x-user-id"] as string);
+    const { base64Data, fileName, fileType } = req.body;
+    const authId = (req as any).uid as string;
     if (!authId) {
       return res.status(401).json({ error: "Unauthorized: Missing authenticated userId." });
     }
@@ -324,6 +333,9 @@ app.post(["/api/chat", "/api/aria"], async (req, res) => {
     const athleteId = reqAthleteId || reqAthleteProfile?.id;
     if (!athleteId) {
       return res.status(400).json({ error: "Missing valid athleteId in request." });
+    }
+    if (!(await verifyAthleteAccess((req as any).uid, athleteId))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     if (isAborted) {
@@ -1108,7 +1120,7 @@ ${textToSummarize}`;
 app.post("/api/coach/validate-methodology", async (req, res) => {
   try {
     const { title, content, discipline } = req.body;
-    const userId = req.body.athleteId || req.body.userId || (req.headers["x-user-id"] as string);
+    const userId = (req as any).uid as string;
 
     if (!userId) {
       return res.status(401).json({ 
@@ -1216,13 +1228,16 @@ Respond with JSON:
 // Endpoint for 48-Hour Cloudinary Asset Cleanup
 app.post("/api/cloudinary/destroy", async (req, res) => {
   try {
-    const { publicId, resourceType, userId } = req.body;
-    const authId = userId || (req.headers["x-user-id"] as string);
+    const { publicId, resourceType } = req.body;
+    const authId = (req as any).uid as string;
     if (!authId) {
       return res.status(401).json({ error: "Unauthorized: Missing authenticated userId." });
     }
-    if (!publicId) {
+    if (!publicId || typeof publicId !== 'string') {
       return res.status(400).json({ error: "Missing publicId parameter." });
+    }
+    if (!publicId.startsWith(`strides_users/${authId}/`) || publicId.includes('..')) {
+      return res.status(403).json({ error: "Forbidden: asset does not belong to the authenticated user." });
     }
     const destroyed = await destroyFromCloudinary(publicId, resourceType || 'image');
     res.json({ success: true, destroyed });
@@ -1414,10 +1429,15 @@ app.post("/api/cron/scientific-refresh/longevity", async (req, res) => {
 });
 
 async function startServer() {
-  const PORT = 3000;
-  
+  const PORT = Number(process.env.PORT) || 3000;
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+    const vite = await createViteServer({
+      // Attach HMR websocket to the app's own HTTP server so it never opens a second port (24678).
+      server: { middlewareMode: true, hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer } },
+      appType: "spa"
+    });
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, "dist");
@@ -1427,7 +1447,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[Startup] Port ${PORT} is already in use. Stop the previous server process and restart.`);
+      process.exit(1);
+    }
+    throw err;
+  });
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`STRIDES Server active on port ${PORT}`);
     // Check GCP metadata server reachability with 1s timeout and log warning if unreachable
     checkGcpMetadataAvailability().catch(() => {});

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AthleteProfile, CoachMethodologyDoc } from '../types';
 import { saveCoachMethodologyDoc } from '../lib/firebase';
+import { authFetch } from '../lib/authFetch';
 
 interface CoachMethodologyModalProps {
   athlete: AthleteProfile;
@@ -42,7 +43,7 @@ export const CoachMethodologyModal: React.FC<CoachMethodologyModalProps> = ({
     setStatusMessage('Scanning peer-reviewed literature (2021–2026 5-Year Window)...');
 
     try {
-      const response = await fetch('/api/coach/validate-methodology', {
+      const response = await authFetch('/api/coach/validate-methodology', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
