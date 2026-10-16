@@ -1007,10 +1007,9 @@ async function verifyAthleteAccess(uid: string, athleteId: string) {
   if (uid === athleteId) return true;
   if (!adminDb) return false;
   
-  const userDoc = await adminDb.collection('users').doc(uid).get();
-  if (!userDoc.exists) return false;
-  const userData = userDoc.data();
-  if (userData?.role !== 'COACH') return false;
+  // Check coach role via roles collection
+  const roleDoc = await adminDb.collection('roles').doc(uid).get();
+  if (roleDoc.data()?.role !== 'COACH') return false;
   
   const athleteDoc = await adminDb.collection('users').doc(athleteId).get();
   if (!athleteDoc.exists) return false;
@@ -1122,10 +1121,10 @@ app.post("/api/coach/validate-methodology", async (req, res) => {
     let isVerifiedCoach = false;
     try {
       if (adminDb) {
-        const userDoc = await adminDb.collection("users").doc(userId).get();
-        if (userDoc.exists) {
-          const userData = userDoc.data();
-          if (userData?.role === "COACH") {
+        const roleDoc = await adminDb.collection("roles").doc(userId).get();
+        if (roleDoc.exists) {
+          const roleData = roleDoc.data();
+          if (roleData?.role === "COACH") {
             isVerifiedCoach = true;
           }
         }

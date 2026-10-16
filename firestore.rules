@@ -11,21 +11,29 @@ service cloud.firestore {
     }
 
     // Role check from server-only collection
-    function isCoach() {
-      return isAuthenticated() && exists(/databases/$(database)/documents/roles/$(request.auth.uid));
+    function isCoach(uid) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/roles/$(uid)) &&
+             get(/databases/$(database)/documents/roles/$(uid)).data.role == 'COACH';
     }
 
     function isClubStaffOf(athleteId) {
       let athlete = get(/databases/$(database)/documents/users/$(athleteId)).data;
-      return isCoach() && 
+      return isCoach(request.auth.uid) && 
         athlete.clubId != null &&
         request.auth.uid in get(/databases/$(database)/documents/clubs/$(athlete.clubId)).data.staffIds;
     }
 
     match /users/{userId} {
-      allow read: if isOwner(userId) || isClubStaffOf(userId) || isCoach();
-      // Users cannot change their own role or clubId
-      allow write: if isOwner(userId) && 
+      allow read: if isOwner(userId) || isClubStaffOf(userId) || isCoach(request.auth.uid);
+      
+      // On create, allow if uid matches, role is ATHLETE, and clubId is absent/null
+      allow create: if isOwner(userId) && 
+        request.resource.data.role == 'ATHLETE' &&
+        (!('clubId' in request.resource.data) || request.resource.data.clubId == null);
+        
+      // On update, allow if uid matches and role/clubId unchanged
+      allow update: if isOwner(userId) && 
         request.resource.data.role == resource.data.role && 
         request.resource.data.clubId == resource.data.clubId;
 
@@ -45,8 +53,10 @@ service cloud.firestore {
 
     match /clubs/{clubId} {
       allow read: if isAuthenticated();
-      // Club write allow only if owner or staff
-      allow write: if isAuthenticated() && 
+      // On create, allow if caller is owner and is a COACH
+      allow create: if isCoach(request.auth.uid) && request.auth.uid == request.resource.data.ownerCoachId;
+      // On update, check owner or staff
+      allow update: if isAuthenticated() && 
         (request.auth.uid == resource.data.ownerCoachId || request.auth.uid in resource.data.staffIds);
     }
 
@@ -68,12 +78,18 @@ service cloud.firestore {
 
     match /scientificEvidence/{evidenceId} {
       allow read: if isAuthenticated();
-      allow write: if isCoach();
+      allow write: if isCoach(request.auth.uid);
     }
 
     match /eventReferenceStandards/{standardId} {
       allow read: if isAuthenticated();
-      allow write: if isCoach();
+      allow write: if isCoach(request.auth.uid);
+    }
+    
+    // Server-only roles collection
+    match /roles/{userId} {
+      allow read: if isCoach(request.auth.uid);
+      allow write: if false;
     }
   }
 }
