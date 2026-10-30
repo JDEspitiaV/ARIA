@@ -53,9 +53,7 @@ import {
   type Firestore as AdminFirestore 
 } from "firebase-admin/firestore";
 import { 
-  getAthleteProfile, 
-  getAthletePeriodizationPlan, 
-  getCompetitionCalendar 
+  normalizeProfile
 } from "./src/lib/firebase";
 
 dotenv.config();
@@ -1014,6 +1012,27 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
   }
 });
 
+// Server-side Firestore reads via Admin SDK (the client SDK has no signed-in user on the server,
+// so security rules would always deny these reads).
+async function adminGetDoc(collection: string, id: string): Promise<any | null> {
+  if (!adminDb) return null;
+  try {
+    const snap = await adminDb.collection(collection).doc(id).get();
+    return snap.exists ? snap.data() : null;
+  } catch (err: any) {
+    console.warn(`[Firestore-Admin] Could not read ${collection}/${id}: ${err?.message || err}`);
+    return null;
+  }
+}
+const getAthleteProfile = async (athleteId: string): Promise<AthleteProfile | null> => {
+  const raw = await adminGetDoc('users', athleteId);
+  return raw ? normalizeProfile(athleteId, raw).profile : null;
+};
+const getAthletePeriodizationPlan = async (athleteId: string): Promise<AthletePeriodizationPlan | null> =>
+  (await adminGetDoc('athletePeriodizationPlans', athleteId)) as AthletePeriodizationPlan | null;
+const getCompetitionCalendar = async (athleteId: string): Promise<CompetitionCalendar | null> =>
+  (await adminGetDoc('competitionCalendar', athleteId)) as CompetitionCalendar | null;
+
 // Helper: Verify if user has access to athlete
 async function verifyAthleteAccess(uid: string, athleteId: string) {
   if (uid === athleteId) return true;
@@ -1434,8 +1453,9 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      // Attach HMR websocket to the app's own HTTP server so it never opens a second port (24678).
-      server: { middlewareMode: true, hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer } },
+      // HMR is off by default: behind the AI Studio / Cloud Run proxy the HMR websocket cannot open and
+      // floods the console. Set ENABLE_HMR=true locally to use it; it then shares the app's HTTP server (no port 24678).
+      server: { middlewareMode: true, hmr: process.env.ENABLE_HMR === 'true' ? { server: httpServer } : false },
       appType: "spa"
     });
     app.use(vite.middlewares);

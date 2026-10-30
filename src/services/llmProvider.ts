@@ -123,7 +123,7 @@ export async function streamChat({
 
       const controller = new AbortController();
       let timedOut = false;
-      const firstChunkTimeoutMs = 8000; // 8-second hard timeout for first chunk
+      const firstChunkTimeoutMs = Number(process.env.LLM_FIRST_CHUNK_TIMEOUT_MS) || 30000; // hard timeout for first chunk (free-tier models can be slow)
 
       let timeoutId: NodeJS.Timeout | null = setTimeout(() => {
         if (!yieldedAnyChunk) {
@@ -259,7 +259,8 @@ export async function streamChat({
           };
         }
 
-        if (attempt < maxAttempts - 1 && isRetriable) {
+        // A timeout means this model is slow/unavailable right now: go straight to the fallback model instead of retrying it.
+        if (attempt < maxAttempts - 1 && isRetriable && !timedOut) {
           await new Promise((r) => setTimeout(r, 500));
         } else {
           console.warn(`[LLMProvider] Moving to next fallback model if available...`);

@@ -208,7 +208,7 @@ export async function signInWithSSO(providerType: 'google' | 'microsoft' | 'appl
  * STRICT POLICY: NEVER synthesize or fabricate physical measurements or data.
  * Inseam (trocanteric length) provides femoral lever proportions for biomechanical calculations.
  */
-function normalizeProfile(athleteId: string, raw: any): { profile: AthleteProfile; needsSave: boolean } {
+export function normalizeProfile(athleteId: string, raw: any): { profile: AthleteProfile; needsSave: boolean } {
   let needsSave = false;
 
   // 1. Biometrics / Anthropometrics

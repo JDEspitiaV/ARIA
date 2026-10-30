@@ -1,3 +1,12 @@
+function logSciNotice(source: string, error: any) {
+  const name = error?.name || '';
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    console.log(`[SciencePipeline] ${source}: skipped (timeout)`);
+  } else {
+    console.warn(`[SciencePipeline] ${source} notice: ${error?.message || error}`);
+  }
+}
+
 /**
  * STRIDES Science Retrieval Service
  * Multi-API Evidence Retrieval Pipeline & Mathematical Gatekeeper
@@ -168,7 +177,7 @@ export async function fetchPubMedLiteratureRaw(query: string): Promise<Literatur
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] PubMed retrieval notice:', error);
+    logSciNotice('PubMed', error);
     return [];
   }
 }
@@ -215,7 +224,7 @@ export async function fetchOpenAlexLiteratureRaw(query: string): Promise<Literat
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] OpenAlex retrieval notice:', error);
+    logSciNotice('OpenAlex', error);
     return [];
   }
 }
@@ -252,7 +261,7 @@ export async function fetchEuropePMCLiteratureRaw(query: string): Promise<Litera
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] Europe PMC retrieval notice:', error);
+    logSciNotice('Europe PMC', error);
     return [];
   }
 }
@@ -296,7 +305,7 @@ export async function fetchCrossrefLiteratureRaw(query: string): Promise<Literat
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] Crossref retrieval notice:', error);
+    logSciNotice('Crossref', error);
     return [];
   }
 }
@@ -334,7 +343,7 @@ export async function fetchCoreLiteratureRaw(query: string): Promise<LiteratureI
       source: 'CORE' as const
     }));
   } catch (error) {
-    console.warn('[SciencePipeline] CORE API notice:', error);
+    logSciNotice('CORE API', error);
     return [];
   }
 }
@@ -384,7 +393,7 @@ export async function fetchArxivLiteratureRaw(query: string): Promise<Literature
 
     return items;
   } catch (error) {
-    console.warn('[SciencePipeline] arXiv notice:', error);
+    logSciNotice('arXiv', error);
     return [];
   }
 }
@@ -421,7 +430,7 @@ export async function fetchOpenReviewLiteratureRaw(query: string): Promise<Liter
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] OpenReview notice:', error);
+    logSciNotice('OpenReview', error);
     return [];
   }
 }
@@ -463,7 +472,7 @@ export async function fetchBmcDoajLiteratureRaw(query: string): Promise<Literatu
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] BMC/DOAJ notice:', error);
+    logSciNotice('BMC/DOAJ', error);
     return [];
   }
 }
@@ -506,7 +515,7 @@ export async function fetchClinicalTrialsRaw(query: string): Promise<LiteratureI
       };
     });
   } catch (error) {
-    console.warn('[SciencePipeline] ClinicalTrials notice:', error);
+    logSciNotice('ClinicalTrials', error);
     return [];
   }
 }

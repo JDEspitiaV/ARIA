@@ -12,3 +12,12 @@ coverage/
 
 # Local Firebase config overrides
 firebase-applet-config.json.local
+
+# Scratch and test files
+inferred_contexts.json
+test_chat.js
+test_preload.js
+patch_app.py
+clean_threads.ts
+run_cleanup.js
+get_channel_ids.js
