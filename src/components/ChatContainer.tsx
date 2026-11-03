@@ -764,16 +764,16 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
     const abortController = new AbortController();
     activeAbortControllerRef.current = abortController;
 
-    // 60-second top-level hard timeout for entire chat request
-    const TOTAL_TIMEOUT_MS = 60000;
+    // 120-second top-level hard timeout for entire chat request (allows 60s timeout + automatic retry)
+    const TOTAL_TIMEOUT_MS = 120000;
     const totalTimeoutId = setTimeout(() => {
       try {
-        abortController.abort(new Error('TIMEOUT_60S'));
+        abortController.abort(new Error('TIMEOUT_120S'));
       } catch {}
     }, TOTAL_TIMEOUT_MS);
 
-    // 15-second client-side watchdog timer: alerts athlete if no first chunk arrives
-    const WATCHDOG_MS = 15000;
+    // 25-second client-side watchdog timer: alerts athlete if no first chunk arrives
+    const WATCHDOG_MS = 25000;
     let watchdogTimer: any = setTimeout(() => {
       setIsSlowWarning(true);
       setStatusLog('Esto está tardando más de lo normal...');
@@ -903,7 +903,11 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
                     functionCallPayload = eventData.functionCall;
                   }
                 } else if (eventData.type === 'error') {
-                  throw new Error(eventData.error || 'Streaming error');
+                  const errorToThrow: any = new Error(eventData.error || 'Streaming error');
+                  if (eventData.isTimeout) {
+                    errorToThrow.isTimeout = true;
+                  }
+                  throw errorToThrow;
                 }
               } catch (parseErr: any) {
                 if (parseErr.message && !parseErr.message.includes('JSON')) {
@@ -1080,7 +1084,18 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       console.error('[ARIA Stage 6: FAILED] Error during chat processing:', err);
       setLastFailedPrompt(text);
 
-      const isTimeout = err?.name === 'AbortError' || err?.message === 'TIMEOUT_60S' || abortController.signal.aborted;
+      const isTimeout = Boolean(
+        err?.isTimeout || 
+        err?.name === 'AbortError' || 
+        err?.message === 'TIMEOUT_60S' || 
+        err?.message === 'TIMEOUT_120S' || 
+        abortController.signal.aborted ||
+        (err?.message && (
+          err.message.toLowerCase().includes('timeout') ||
+          err.message.toLowerCase().includes('tardó') ||
+          err.message.toLowerCase().includes('tiempo máximo')
+        ))
+      );
 
       // Clean up incomplete or empty streaming message placeholder
       setMessages(prev => prev.filter(m => m.id !== streamingAssistantId || (m.content && m.content.trim().length > 0)));

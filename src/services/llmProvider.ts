@@ -123,7 +123,7 @@ export async function streamChat({
 
       const controller = new AbortController();
       let timedOut = false;
-      const firstChunkTimeoutMs = Number(process.env.LLM_FIRST_CHUNK_TIMEOUT_MS) || 30000; // hard timeout for first chunk (free-tier models can be slow)
+      const firstChunkTimeoutMs = Number(process.env.LLM_FIRST_CHUNK_TIMEOUT_MS) || 60000; // 60-second timeout for first chunk to allow slow/heavy models to respond
 
       let timeoutId: NodeJS.Timeout | null = setTimeout(() => {
         if (!yieldedAnyChunk) {
@@ -259,11 +259,14 @@ export async function streamChat({
           };
         }
 
-        // A timeout means this model is slow/unavailable right now: go straight to the fallback model instead of retrying it.
-        if (attempt < maxAttempts - 1 && isRetriable && !timedOut) {
-          await new Promise((r) => setTimeout(r, 500));
+        // If the attempt failed due to timeout or retriable error, retry one more time automatically
+        if (attempt < maxAttempts - 1 && isRetriable) {
+          if (timedOut) {
+            console.warn(`[LLMProvider] Attempt ${attempt + 1} timed out on model '${model}'. Retrying one more time automatically...`);
+          }
+          await new Promise((r) => setTimeout(r, 1000));
         } else {
-          console.warn(`[LLMProvider] Moving to next fallback model if available...`);
+          console.warn(`[LLMProvider] Attempts exhausted on '${model}'. Moving to next fallback model if available...`);
           break; // Move to next fallback model
         }
       } finally {
@@ -376,7 +379,10 @@ export async function generateJson<T = any>({
 
         console.warn(`[LLMProvider generateJson] Error on model '${model}' (attempt ${attempt + 1}/${maxAttempts}): ${errMsg}`);
 
-        if (attempt < maxAttempts - 1 && isRetriable && !timedOut) {
+        if (attempt < maxAttempts - 1 && isRetriable) {
+          if (timedOut) {
+            console.warn(`[LLMProvider generateJson] Attempt ${attempt + 1} timed out on model '${model}'. Retrying...`);
+          }
           await new Promise((r) => setTimeout(r, 500));
         } else {
           break;

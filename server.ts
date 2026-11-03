@@ -58,6 +58,9 @@ import {
 
 dotenv.config();
 
+// Default LLM first chunk timeout to 60000ms (60 seconds)
+process.env.LLM_FIRST_CHUNK_TIMEOUT_MS = process.env.LLM_FIRST_CHUNK_TIMEOUT_MS || "60000";
+
 // Firebase Admin SDK Initialization (server-side authoritative access)
 const firebaseProjectId = process.env.VITE_FIREBASE_PROJECT_ID || appletConfig.projectId;
 let adminApp: AdminApp | null = null;
@@ -806,12 +809,19 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
       }
       console.error("[ARIA Stage 5: FAILED] Error calling LLM streaming API:", llmErr);
       const errMsg = llmErr?.message || String(llmErr) || "LLM streaming API failure";
+      const isTimeout = llmErr?.name === 'AbortError' || 
+                        errMsg.toLowerCase().includes('timeout') || 
+                        errMsg.toLowerCase().includes('aborted');
+
+      const userFriendlyMessage = isTimeout
+        ? "El servidor de IA superó el tiempo máximo de espera sin responder (timeout). Por favor, intenta de nuevo."
+        : `Analysis failed — please try again. [Error: ${errMsg}]`;
       
       if (!res.writableEnded) {
-        // Surface real error honestly to the user — NEVER return a fabricated fallback string
         res.write(`data: ${JSON.stringify({ 
           type: 'error', 
-          error: `Analysis failed — please try again. [Error: ${errMsg}]` 
+          error: userFriendlyMessage,
+          isTimeout
         })}\n\n`);
         res.end();
       }
@@ -1003,10 +1013,16 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
       return;
     }
     console.error("[ARIA Chat Backend Error]:", error);
+    const errMsg = error?.message || String(error) || "ARIA Backend Communication Error";
+    const isTimeout = error?.name === 'AbortError' || errMsg.toLowerCase().includes('timeout');
+    const userFriendlyMessage = isTimeout
+      ? "El servidor de IA superó el tiempo máximo de espera sin responder (timeout). Por favor, intenta de nuevo."
+      : errMsg;
+
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message || "ARIA Backend Communication Error" });
+      res.status(isTimeout ? 504 : 500).json({ error: userFriendlyMessage, isTimeout });
     } else if (!res.writableEnded) {
-      res.write(`data: ${JSON.stringify({ type: 'error', error: error.message || "Communication stream interrupted." })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'error', error: userFriendlyMessage, isTimeout })}\n\n`);
       res.end();
     }
   }
