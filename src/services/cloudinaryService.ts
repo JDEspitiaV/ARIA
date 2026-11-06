@@ -28,7 +28,7 @@ export async function uploadToCloudinary(
   const folder = `strides_users/${userId}`;
   
   // Cloudinary signature calculation: SHA1 of sorted params + api_secret
-  const paramsToSign = `folder=${folder}&timestamp=${timestamp}${apiSecret}`;
+  const paramsToSign = `access_mode=public&folder=${folder}&timestamp=${timestamp}${apiSecret}`;
   const signature = crypto.createHash('sha1').update(paramsToSign).digest('hex');
 
   // Ensure file data URI format
@@ -42,6 +42,7 @@ export async function uploadToCloudinary(
   formData.append('api_key', apiKey);
   formData.append('timestamp', timestamp.toString());
   formData.append('folder', folder);
+  formData.append('access_mode', 'public');
   formData.append('signature', signature);
 
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;

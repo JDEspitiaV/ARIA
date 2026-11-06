@@ -27,7 +27,8 @@ import {
   UPDATE_ATHLETE_DATA_TOOL,
   UPDATE_PERIODIZATION_PLAN_TOOL,
   UPDATE_INFERRED_TRAINING_CONTEXT_TOOL,
-  UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL
+  UPDATE_CLINICAL_AND_GENETIC_PROFILE_TOOL,
+  getAriaSystemPrompt
 } from "./src/services/ariaTools";
 import {
   getDefaultPeriodizationPlan,
@@ -251,7 +252,7 @@ if (!apiKey) {
   throw new Error("FATAL: LLM_API_KEY environment variable is missing.");
 }
 
-// Server-side signed Cloudinary upload endpoint
+// Server-side signed Cloudinary upload endpoint with graceful fallback
 app.post("/api/upload", async (req, res) => {
   try {
     const { base64Data, fileName, fileType } = req.body;
@@ -263,11 +264,49 @@ app.post("/api/upload", async (req, res) => {
       return res.status(400).json({ error: "Missing file payload (base64Data or fileName)." });
     }
 
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      console.warn("[API Upload] Cloudinary credentials not configured in environment. Using data URI.");
+      let dataUri = base64Data;
+      if (!dataUri.startsWith('data:')) {
+        dataUri = `data:${fileType || 'application/octet-stream'};base64,${base64Data}`;
+      }
+      return res.json({
+        url: dataUri,
+        base64Data,
+        name: fileName,
+        type: fileType || 'application/octet-stream',
+        size: Buffer.byteLength(base64Data, 'utf8'),
+        uploadedAt: new Date().toISOString()
+      });
+    }
+
     const uploaded = await uploadToCloudinary(base64Data, fileName, fileType, authId);
-    res.json(uploaded);
+    res.json({
+      ...uploaded,
+      base64Data
+    });
   } catch (err: any) {
-    console.error("[API Upload] Cloudinary upload error:", err);
-    res.status(500).json({ error: err.message || "Failed to upload file to Cloudinary." });
+    console.error("[API Upload] Cloudinary upload error, using local data URI fallback:", err);
+    const { base64Data, fileName, fileType } = req.body || {};
+    if (base64Data && fileName) {
+      let dataUri = base64Data;
+      if (!dataUri.startsWith('data:')) {
+        dataUri = `data:${fileType || 'application/octet-stream'};base64,${base64Data}`;
+      }
+      return res.json({
+        url: dataUri,
+        base64Data,
+        name: fileName,
+        type: fileType || 'application/octet-stream',
+        size: Buffer.byteLength(base64Data, 'utf8'),
+        uploadedAt: new Date().toISOString()
+      });
+    }
+    res.status(500).json({ error: err.message || "Failed to upload file." });
   }
 });
 
@@ -517,13 +556,14 @@ CONTEXTO DE ENTRENAMIENTO INFERIDO (CONSTRUIDO DE LA CONVERSACIÓN):
           const doiUrl = doc.doi ? (doc.doi.startsWith('http') ? doc.doi : `https://doi.org/${doc.doi}`) : '';
           const resolvedUrl = doc.url || doiUrl || '';
           const domainTag = doc.domain ? `[Domain: ${doc.domain}] ` : '[Domain: performance] ';
-          return `[${doc.source}] ${domainTag}${doc.belowThreshold ? '[Below-Threshold, Best Available] ' : ''}${doc.title} (${doc.year}). ${doiUrl ? `DOI Link: ${doiUrl}` : ''}${resolvedUrl && resolvedUrl !== doiUrl ? ` | Direct URL: ${resolvedUrl}` : ''} | Score: ${doc.score}`;
+          const mdLink = resolvedUrl ? `[${doc.title} (${doc.year})](${resolvedUrl})` : `${doc.title} (${doc.year})`;
+          return `[${doc.source}] ${domainTag}${doc.belowThreshold ? '[Below-Threshold, Best Available] ' : ''}${doc.title} (${doc.year}) | Link: ${resolvedUrl || 'N/A'} | Markdown Link: ${mdLink} | Score: ${doc.score}`;
         }).join("\n")
       : "";
 
     // 3. Format coaching media methodology
     const coachingMediaText = coachingMedia.length > 0
-      ? coachingMedia.map(m => `[Methodology Video Cue] ${m.title} (Channel: ${m.channelTitle}) - Focus: ${m.description} | Video URL: ${m.url}`).join("\n")
+      ? coachingMedia.map(m => `[Methodology Video Cue] ${m.title} (Channel: ${m.channelTitle}) - Focus: ${m.description} | Video URL: ${m.url} | Markdown Link: [Video: ${m.title}](${m.url})`).join("\n")
       : "";
 
     // 4. Curated Event Reference Standards (Curated Technical Benchmarks, Kinematics & Geometry)
@@ -587,8 +627,29 @@ ${personalRecords1RMs}`;
       ? `\nCOACHING METHODOLOGY & DRILL CUEING (VERIFIED VIDEO URLS - METHODOLOGY ONLY):\n${coachingMediaText}\n` 
       : '';
 
-    // 10. Static Context Blob (Grounding context injected into the ARIA prompt)
-    const staticContextBlob = `ATHLETE FIREBASE PROFILE:
+    // 10. Temporal Dynamic Date Anchor & Static Context Blob
+    const currentDate = new Date();
+    const currentYear = currentDate.getFullYear();
+    const isoDate = currentDate.toISOString().split('T')[0];
+    const formattedCurrentDate = currentDate.toLocaleDateString('es-ES', { 
+      weekday: 'long', 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    });
+
+    const temporalContextText = `TEMPORAL ANCHOR & DYNAMIC CURRENT DATE:
+- Fecha actual: ${formattedCurrentDate} (${isoDate})
+- Año calendario actual: ${currentYear}
+[MANDATO DE RECENCIA Y TEMPORALIDAD]:
+1. Aplica la regla estricta de recencia científica: la investigación en medicina deportiva y alto rendimiento es válida por 3 a 5 años (años ${currentYear - 5} a ${currentYear}). Literatura más antigua es histórica.
+2. Medicina clínica y farmacología: 2 a 3 años (${currentYear - 3} a ${currentYear}).
+3. Pregunta proactivamente al usuario si requiere estrictamente los últimos 3 años o un margen más amplio según su investigación.
+4. Cita siempre fuentes con enlaces Markdown clickeables: [Título del Estudio (Año)](URL).`;
+
+    const staticContextBlob = `${temporalContextText}
+
+ATHLETE FIREBASE PROFILE:
 ${JSON.stringify(athleteProfile, null, 2)}
 
 ${clinicalGeneticText}
@@ -667,7 +728,12 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
         let isText = false;
         let textContent = '';
 
-        const isDriveFile = (fileObj as any).isGoogleDrive || Boolean((fileObj as any).driveFileId) || (fileObj.url && (fileObj.url.includes('drive.google.com') || fileObj.url.includes('docs.google.com')));
+        const isDriveFile = (fileObj as any).isGoogleDrive || Boolean((fileObj as any).driveFileId) || (fileObj.url && (
+          fileObj.url.includes('drive.google.com') || 
+          fileObj.url.includes('docs.google.com') ||
+          fileObj.url.includes('googleapis.com') ||
+          fileObj.url.includes('googleusercontent.com')
+        ));
 
         if (isDriveFile) {
           const driveDocInfo = [
@@ -698,16 +764,39 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
               }
             }
           } else if (fileObj.url.startsWith('http://') || fileObj.url.startsWith('https://')) {
-            const fileRes = await fetch(fileObj.url, { signal: AbortSignal.timeout(5000) });
-            if (!fileRes.ok) {
-              throw new Error(`HTTP ${fileRes.status} fetching remote file`);
+            const fetchHeaders: Record<string, string> = {};
+            const isCloudinaryUrl = fileObj.url.includes('res.cloudinary.com') || fileObj.url.includes('cloudinary');
+            const cloudApiKey = process.env.CLOUDINARY_API_KEY;
+            const cloudApiSecret = process.env.CLOUDINARY_API_SECRET;
+            if (isCloudinaryUrl && cloudApiKey && cloudApiSecret) {
+              fetchHeaders['Authorization'] = `Basic ${Buffer.from(`${cloudApiKey}:${cloudApiSecret}`).toString('base64')}`;
             }
-            if (mime.startsWith('text/') || mime === 'text/csv' || fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
-              isText = true;
-              textContent = await fileRes.text();
-            } else {
-              const arrayBuffer = await fileRes.arrayBuffer();
-              base64 = Buffer.from(arrayBuffer).toString('base64');
+
+            try {
+              const fileRes = await fetch(fileObj.url, { 
+                headers: fetchHeaders,
+                signal: AbortSignal.timeout(8000) 
+              });
+
+              if (fileRes.ok) {
+                if (mime.startsWith('text/') || mime === 'text/csv' || fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
+                  isText = true;
+                  textContent = await fileRes.text();
+                } else {
+                  const arrayBuffer = await fileRes.arrayBuffer();
+                  base64 = Buffer.from(arrayBuffer).toString('base64');
+                }
+              } else {
+                console.warn(`[Multimodal] Remote file fetch HTTP ${fileRes.status} for "${fileName}" (${fileObj.url}). Preserving reference context.`);
+                extractedFilesText += `\n\n[Attached Document: ${fileName} (${mime}) - Remote asset referenced at ${fileObj.url}]`;
+                parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: fileObj.size || 0, format: 'remote_reference_unreachable' });
+                continue;
+              }
+            } catch (fetchErr: any) {
+              console.warn(`[Multimodal] Network error fetching remote file "${fileName}":`, fetchErr.message);
+              extractedFilesText += `\n\n[Attached Document: ${fileName} (${mime}) - Remote asset referenced at ${fileObj.url}]`;
+              parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: fileObj.size || 0, format: 'remote_reference_error' });
+              continue;
             }
           }
         }
@@ -788,11 +877,13 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
       }
     }
 
+    const ariaSystemPrompt = getAriaSystemPrompt(currentDate);
+
     const llmStart = Date.now();
     let streamResult: StreamResult;
     try {
       streamResult = await streamChat({
-        system: STRIDES_SYSTEM_PROMPT,
+        system: ariaSystemPrompt,
         messages: llmMessages,
         tools: ARIA_TOOLS,
         signal: requestAbortController.signal,
@@ -839,6 +930,64 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
 
     if (streamResult.functionCalls && streamResult.functionCalls.length > 0) {
       const call = streamResult.functionCalls[0];
+
+      // Helper to process continuation: guarantees that the model answers the user's query
+      // in the SAME response stream rather than cutting off prematurely after saving memory.
+      const completeToolCallWithAnswer = async (
+        functionCallPayload: any,
+        defaultConfirmation: string
+      ) => {
+        let finalAnswerText = streamResult.text || defaultConfirmation;
+
+        // If the model only returned a tool call with empty or very short text (< 120 chars),
+        // stream the confirmation prefix, then immediately execute a continuation turn
+        // so the user gets their actual question answered in the SAME response stream.
+        if (!streamResult.text || streamResult.text.trim().length < 120) {
+          if (!streamResult.text && !res.writableEnded && !isAborted) {
+            res.write(`data: ${JSON.stringify({ type: 'chunk', text: `${defaultConfirmation}\n\n` })}\n\n`);
+          }
+
+          try {
+            console.log(`[ARIA Pipeline] Tool '${functionCallPayload.name}' executed. Continuing generation to answer user's original query in the same stream...`);
+            const continuationMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+              ...llmMessages,
+              { role: 'assistant', content: defaultConfirmation },
+              { 
+                role: 'user', 
+                content: `[SISTEMA: La información de contexto ha sido registrada y guardada exitosamente. Ahora responde de manera completa, detallada y directa a la consulta o pregunta original del atleta, aplicando tus conocimientos de biomecánica, entrenamiento y salud estructural con enlaces Markdown clickeables a fuentes, sin mencionar herramientas internas.]` 
+              }
+            ];
+
+            const continuationResult = await streamChat({
+              system: ariaSystemPrompt,
+              messages: continuationMessages,
+              tools: undefined, // Omit tools to prevent circular tool execution
+              signal: requestAbortController.signal,
+              onChunk: (chunk: string) => {
+                if (!isAborted && !res.writableEnded) {
+                  res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
+                }
+              }
+            });
+
+            if (continuationResult.text) {
+              finalAnswerText = `${defaultConfirmation}\n\n${continuationResult.text}`;
+            }
+          } catch (contErr: any) {
+            console.warn("[ARIA Pipeline] Error in continuation stream after tool call:", contErr);
+          }
+        }
+
+        if (!res.writableEnded && !isAborted) {
+          res.write(`data: ${JSON.stringify({ 
+            type: 'done', 
+            text: finalAnswerText,
+            functionCall: functionCallPayload 
+          })}\n\n`);
+          res.end();
+        }
+      };
+
       if (call.name === 'updateAthleteData') {
         const args = (call.args || {}) as any;
         
@@ -871,15 +1020,7 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
         };
 
         const confirmationText = streamResult.text || "He actualizado tu perfil en STRIDES con estos parámetros. El sistema de entrenamiento integral está listo para el análisis táctico.";
-        if (!streamResult.text) {
-          res.write(`data: ${JSON.stringify({ type: 'chunk', text: confirmationText })}\n\n`);
-        }
-        res.write(`data: ${JSON.stringify({ 
-          type: 'done', 
-          text: confirmationText,
-          functionCall: functionCallPayload 
-        })}\n\n`);
-        res.end();
+        await completeToolCallWithAnswer(functionCallPayload, confirmationText);
         return;
       } else if (call.name === 'updateInferredTrainingContext') {
         const args = (call.args || {}) as any;
@@ -901,15 +1042,7 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
         };
 
         const confirmationText = streamResult.text || `He registrado tu contexto de entrenamiento inferido: Fase ${inferredData.currentPhase}${inferredData.proximityToCompetition ? ` (${inferredData.proximityToCompetition})` : ''}. Tus próximas recomendaciones tácticas estarán calibradas a este momento.`;
-        if (!streamResult.text) {
-          res.write(`data: ${JSON.stringify({ type: 'chunk', text: confirmationText })}\n\n`);
-        }
-        res.write(`data: ${JSON.stringify({ 
-          type: 'done', 
-          text: confirmationText,
-          functionCall: functionCallPayload 
-        })}\n\n`);
-        res.end();
+        await completeToolCallWithAnswer(functionCallPayload, confirmationText);
         return;
       } else if (call.name === 'updatePeriodizationPlan') {
         const args = (call.args || {}) as any;
@@ -936,15 +1069,7 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
           };
 
           const confirmationText = streamResult.text || `Como atleta independiente sin club asignado, he registrado tu fase actual (${inferredPhase}) en tu contexto inferido. Tus prescripciones tácticas se adaptarán a este bloque.`;
-          if (!streamResult.text) {
-            res.write(`data: ${JSON.stringify({ type: 'chunk', text: confirmationText })}\n\n`);
-          }
-          res.write(`data: ${JSON.stringify({ 
-            type: 'done', 
-            text: confirmationText,
-            functionCall: functionCallPayload 
-          })}\n\n`);
-          res.end();
+          await completeToolCallWithAnswer(functionCallPayload, confirmationText);
           return;
         }
 
@@ -954,15 +1079,7 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
         };
 
         const confirmationText = streamResult.text || "He actualizado el plan de periodización y el calendario de competencias en la base de datos de ARIA. Tu prescripción de entrenamiento ahora responde exactamente a este ciclo y objetivo.";
-        if (!streamResult.text) {
-          res.write(`data: ${JSON.stringify({ type: 'chunk', text: confirmationText })}\n\n`);
-        }
-        res.write(`data: ${JSON.stringify({ 
-          type: 'done', 
-          text: confirmationText,
-          functionCall: functionCallPayload 
-        })}\n\n`);
-        res.end();
+        await completeToolCallWithAnswer(functionCallPayload, confirmationText);
         return;
       } else if (call.name === 'updateClinicalAndGeneticProfile') {
         const args = (call.args || {}) as any;
@@ -976,15 +1093,7 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
         };
 
         const confirmationText = streamResult.text || "He actualizado tu perfil clínico y predisposiciones genéticas en STRIDES para asegurar que toda prescripción respete la tolerancia estructural de tus tejidos.";
-        if (!streamResult.text) {
-          res.write(`data: ${JSON.stringify({ type: 'chunk', text: confirmationText })}\n\n`);
-        }
-        res.write(`data: ${JSON.stringify({ 
-          type: 'done', 
-          text: confirmationText,
-          functionCall: functionCallPayload 
-        })}\n\n`);
-        res.end();
+        await completeToolCallWithAnswer(functionCallPayload, confirmationText);
         return;
       }
     }

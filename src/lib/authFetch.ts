@@ -8,10 +8,14 @@ import { getAuth } from 'firebase/auth';
 export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers || {});
   // Resolved lazily at call time; the Firebase app is initialised in ./firebase before any request is made.
-  const user = getAuth().currentUser;
-  if (user) {
-    const token = await user.getIdToken();
-    headers.set('Authorization', `Bearer ${token}`);
+  try {
+    const user = getAuth().currentUser;
+    if (user) {
+      const token = await user.getIdToken();
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+  } catch (authErr) {
+    console.warn('[authFetch] Could not retrieve auth token:', authErr);
   }
   return fetch(input, { ...init, headers });
 }

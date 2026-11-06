@@ -453,7 +453,16 @@ export function sanitizeForFirestore<T = any>(obj: T): T {
   const clean: Record<string, any> = {};
   for (const [key, value] of Object.entries(obj as Record<string, any>)) {
     if (value !== undefined) {
-      clean[key] = sanitizeForFirestore(value);
+      // Never persist multi-MB base64Data buffers to Firestore documents
+      if (key === 'base64Data') {
+        continue;
+      }
+      // If a base64 data URI is large (> 250KB), do not store raw mega-bytes in the Firestore document
+      if (key === 'url' && typeof value === 'string' && value.startsWith('data:') && value.length > 250000) {
+        clean[key] = value.slice(0, 80) + '...[local-attachment-truncated-for-storage]';
+      } else {
+        clean[key] = sanitizeForFirestore(value);
+      }
     }
   }
   return clean as T;
@@ -816,7 +825,7 @@ export async function deleteThreadMessages(userId: string, threadId: string, mes
 }
 
 export async function uploadChatFile(uid: string, file: File): Promise<AttachedFile> {
-  // Read file as Base64 to transfer securely to server-side Cloudinary upload endpoint
+  // Read file as Base64 to transfer securely to server-side Cloudinary upload endpoint or local fallback
   const base64Data = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
@@ -824,36 +833,61 @@ export async function uploadChatFile(uid: string, file: File): Promise<AttachedF
     reader.readAsDataURL(file);
   });
 
-  const res = await authFetch('/api/upload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  try {
+    const res = await authFetch('/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base64Data,
+        fileName: file.name,
+        fileType: file.type,
+        userId: uid
+      })
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData?.error || `Upload failed with status ${res.status}`);
+    }
+
+    const data = await res.json();
+    return {
+      url: data.url || base64Data,
       base64Data,
-      fileName: file.name,
-      fileType: file.type,
-      userId: uid
-    })
-  });
-
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData?.error || `Upload failed with status ${res.status}`);
+      name: data.name || file.name,
+      type: data.type || file.type,
+      size: data.size || file.size,
+      publicId: data.publicId,
+      uploadedAt: data.uploadedAt || new Date().toISOString()
+    };
+  } catch (err) {
+    console.warn(`[uploadChatFile] Remote upload failed for "${file.name}", using local fallback:`, err);
+    return {
+      url: base64Data,
+      base64Data,
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      uploadedAt: new Date().toISOString()
+    };
   }
-
-  const data = await res.json();
-  return {
-    url: data.url,
-    name: data.name || file.name,
-    type: data.type || file.type,
-    size: data.size || file.size,
-    publicId: data.publicId,
-    uploadedAt: new Date().toISOString()
-  };
 }
 
 export async function uploadChatFiles(uid: string, files: File[]): Promise<AttachedFile[]> {
-  // Parallel uploads to Cloudinary via Promise.all
-  return Promise.all(files.map(f => uploadChatFile(uid, f)));
+  const results = await Promise.allSettled(files.map(f => uploadChatFile(uid, f)));
+  return results.map((result, idx) => {
+    if (result.status === 'fulfilled') {
+      return result.value;
+    }
+    const f = files[idx];
+    return {
+      url: '',
+      name: f.name,
+      type: f.type || 'application/octet-stream',
+      size: f.size,
+      uploadedAt: new Date().toISOString()
+    };
+  });
 }
 
 /**

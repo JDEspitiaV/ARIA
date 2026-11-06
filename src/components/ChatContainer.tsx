@@ -708,16 +708,29 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       
       if (attachedFiles.length > 0 && !textToSend) { // Only upload attached local files for new user messages
         setIsUploading(true);
-        setStatusLog(`Uploading ${attachedFiles.length} file(s) to Cloudinary CDN...`);
+        setStatusLog(`Procesando ${attachedFiles.length} archivo(s)...`);
         try {
           uploadedFiles = await uploadChatFiles(athlete.id, attachedFiles);
         } catch (err: any) {
-          console.error('File upload failed:', err);
-          alert(`Could not upload file attachments: ${err.message || 'Storage error'}`);
-          setIsUploading(false);
-          setIsLoading(false);
-          isSendingRef.current = false;
-          return;
+          console.warn('File upload encountered an issue, fallback to local data URIs:', err);
+          uploadedFiles = await Promise.all(
+            attachedFiles.map(async (file) => {
+              const base64Data = await new Promise<string>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = () => resolve('');
+                reader.readAsDataURL(file);
+              });
+              return {
+                url: base64Data,
+                base64Data,
+                name: file.name,
+                type: file.type || 'application/octet-stream',
+                size: file.size,
+                uploadedAt: new Date().toISOString()
+              };
+            })
+          );
         }
         setIsUploading(false);
       }

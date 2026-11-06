@@ -647,9 +647,21 @@ export function weighScientificLiterature(
       }
     });
 
-    // Recency bonus (+10 for >= 2020)
+    // Recency Scoring based on Scientific Recency Rules (3-5 years valid, 2-3 years volatile clinical)
+    const currentYear = new Date().getFullYear();
     const yearNum = parseInt(article.year, 10);
-    if (!isNaN(yearNum) && yearNum >= 2020) score += 10;
+    if (!isNaN(yearNum)) {
+      const age = currentYear - yearNum;
+      if (age <= 2) {
+        score += 20; // 0-2 years (ultra-recent / clinical)
+      } else if (age <= 3) {
+        score += 15; // 3 years (high performance / RCT standard)
+      } else if (age <= 5) {
+        score += 10; // 4-5 years (valid guideline / meta-analysis window)
+      } else {
+        score -= 15; // > 5 years (historical context)
+      }
+    }
 
     // Detect domain tag if not explicitly set
     let detectedDomain: 'performance' | 'longevity' | 'skeletal' = article.domain || 'performance';

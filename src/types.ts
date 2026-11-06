@@ -135,6 +135,7 @@ export interface AttachedFile {
   publicId?: string;
   uploadedAt?: string;
   expired?: boolean;
+  base64Data?: string;
   driveFileId?: string;
   thumbnailUrl?: string;
   iconUrl?: string;

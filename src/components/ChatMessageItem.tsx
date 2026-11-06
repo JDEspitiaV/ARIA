@@ -242,18 +242,32 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
                 </code>
               );
             },
-            a: ({ node, href, children, ...props }) => (
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-cyan-400 hover:text-cyan-300 underline inline-flex items-center gap-1 font-mono text-xs"
-                {...props}
-              >
-                <span>{children}</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            ),
+            a: ({ node, href, children, ...props }) => {
+              let safeHref = href || '#';
+              if (safeHref.startsWith('doi.org/')) {
+                safeHref = `https://${safeHref}`;
+              } else if (safeHref.startsWith('10.')) {
+                safeHref = `https://doi.org/${safeHref}`;
+              } else if (safeHref.startsWith('www.')) {
+                safeHref = `https://${safeHref}`;
+              } else if (!safeHref.startsWith('http://') && !safeHref.startsWith('https://') && !safeHref.startsWith('mailto:')) {
+                safeHref = `https://${safeHref}`;
+              }
+
+              return (
+                <a
+                  href={safeHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-emerald-400 hover:text-emerald-300 font-semibold underline decoration-emerald-500/60 hover:decoration-emerald-400 inline-flex items-center gap-1 font-mono text-xs transition-colors break-all"
+                  {...props}
+                >
+                  <span>{children}</span>
+                  <ExternalLink className="w-3 h-3 shrink-0 text-emerald-400/80" />
+                </a>
+              );
+            },
             blockquote: ({ node, ...props }) => (
               <blockquote className="border-l-2 border-emerald-500/80 pl-3 py-1 my-2 bg-emerald-950/20 text-zinc-300 italic text-xs sm:text-sm" {...props} />
             )
