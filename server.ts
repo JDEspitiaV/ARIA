@@ -8,6 +8,7 @@ import { createServer as createViteServer } from "vite";
 import { streamChat, generateJson, StreamResult } from "./src/services/llmProvider";
 // @ts-ignore
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import * as XLSX from "xlsx";
 import { 
   fetchAllScientificLiteratureRaw, 
   weighScientificLiterature,
@@ -103,6 +104,124 @@ function loadPersistedInferredContexts() {
   } catch (err) {
     console.warn('[Backend-Context] Could not load persisted inferred contexts from disk:', err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// ROLLING SUMMARY (COMPLETE CONTEXT) & MEMORY BLOCK PIPELINE
+// ---------------------------------------------------------------------------
+// In-memory Rolling Summary storage per active session/thread: Map<threadIdOrKey, string>
+const rollingSummaryStore = new Map<string, string>();
+
+/**
+ * Implements Rolling Summary strategy:
+ * If chat history has >= 10 messages:
+ * - Takes older messages (all except the last 4-6)
+ * - Summarizes them into a dense "Memory Block" with a strict timeout (max 5s) and 2 retries
+ * - Combines with any previous rolling summary
+ * - Stores the accumulated summary in rollingSummaryStore
+ * - Returns the accumulated summary and the last 4-6 recent messages
+ */
+async function processRollingSummary(
+  threadKey: string,
+  historicalMessages: any[]
+): Promise<{ accumulatedSummary: string; recentMessages: any[] }> {
+  const THRESHOLD = 10;
+  const RECENT_COUNT = 6;
+
+  // If total historical turns is below threshold, no summarization needed yet
+  if (!historicalMessages || historicalMessages.length < (THRESHOLD - 1)) {
+    const existing = rollingSummaryStore.get(threadKey) || '';
+    return {
+      accumulatedSummary: existing,
+      recentMessages: historicalMessages
+    };
+  }
+
+  // Split into older messages to compress and recent messages to keep verbatim (last 4-6)
+  const olderMessages = historicalMessages.slice(0, historicalMessages.length - RECENT_COUNT);
+  const recentMessages = historicalMessages.slice(historicalMessages.length - RECENT_COUNT);
+
+  const existingSummary = rollingSummaryStore.get(threadKey) || '';
+
+  // Prepare text to summarize
+  const textToSummarize = olderMessages.map((m: any) => {
+    const r = m.role === 'assistant' || m.role === 'model' ? 'ARIA' : 'ATLETA';
+    const c = (m.content || '').slice(0, 300);
+    return `${r}: ${c}`;
+  }).join('\n');
+
+  const prompt = `Condense and update this running athletic coaching conversation summary into a dense, factual "Memory Block".
+Preserve all key athlete metrics, PRs, training phases, kinetic deficiencies, injury history, and coaching decisions discussed.
+
+${existingSummary ? `EXISTING ACCUMULATED SUMMARY:\n${existingSummary}\n\n` : ''}NEW OLDER MESSAGES TO INTEGRATE:
+${textToSummarize}
+
+Produce a dense, structured Memory Block in Spanish capturing all critical context. Keep it under 200 words.`;
+
+  let newSummary = existingSummary;
+  const MAX_SUMMARY_RETRIES = 2;
+  const SUMMARY_TIMEOUT_MS = 5000;
+
+  for (let attempt = 0; attempt < MAX_SUMMARY_RETRIES; attempt++) {
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try { timeoutController.abort(new Error('Summary timeout')); } catch {}
+    }, SUMMARY_TIMEOUT_MS);
+
+    try {
+      const summaryResult = await generateJson<{ summary?: string; text?: string }>({
+        system: "Eres un sintetizador experto de telemetría y memoria atlética para STRIDES. Genera un bloque denso de memoria en JSON con la propiedad 'summary'.",
+        user: prompt,
+        signal: timeoutController.signal
+      });
+
+      const extracted = summaryResult.summary || summaryResult.text?.trim();
+      if (extracted && extracted.length > 20) {
+        newSummary = extracted;
+        rollingSummaryStore.set(threadKey, newSummary);
+        console.log(`[Rolling Summary] Successfully updated memory block for thread '${threadKey}' (${newSummary.length} chars, summarized ${olderMessages.length} messages)`);
+        break;
+      }
+    } catch (sumErr: any) {
+      console.warn(`[Rolling Summary] Attempt ${attempt + 1}/${MAX_SUMMARY_RETRIES} failed or timed out:`, sumErr?.message || sumErr);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return {
+    accumulatedSummary: newSummary,
+    recentMessages
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DOCUMENT & SPREADSHEET MIME RESOLUTION & VALIDATION
+// ---------------------------------------------------------------------------
+const SUPPORTED_DOCUMENT_MIMES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'text/csv',
+  'text/plain',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif'
+]);
+
+function resolveMimeType(fileName: string, detectedMime?: string): string {
+  const lower = (fileName || '').toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (lower.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (lower.endsWith('.csv')) return 'text/csv';
+  if (lower.endsWith('.txt')) return 'text/plain';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  return detectedMime || 'application/octet-stream';
 }
 
 // Auth Middleware
@@ -680,10 +799,26 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
       historicalTurns = allInputMessages.slice(0, allInputMessages.length - 1);
     }
 
-    // Convert previous messages in the session to OpenAI messages format
+    // Convert previous messages in the session using Rolling Summary
+    const threadKey = (activeThreadId && typeof activeThreadId === 'string' && activeThreadId.trim().length > 0)
+      ? activeThreadId
+      : athleteId;
+
+    // Apply Rolling Summary strategy: summarizes earlier turns when history reaches 10 messages
+    const { accumulatedSummary, recentMessages } = await processRollingSummary(threadKey, historicalTurns);
+
     const llmMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
-    
-    for (const hMsg of historicalTurns) {
+
+    // Inject Accumulated Memory Block if present
+    if (accumulatedSummary && accumulatedSummary.trim().length > 0) {
+      llmMessages.push({
+        role: 'system',
+        content: `[BLOQUE DE MEMORIA DE CONVERSACIÓN PREVIA - RESUMEN ACUMULATIVO]:\nEsta es la síntesis de los mensajes iniciales de esta sesión que ya fueron compactados para mantener contexto completo sin sobrecargar tokens:\n${accumulatedSummary.trim()}`
+      });
+    }
+
+    // The last 4-6 recent messages verbatim
+    for (const hMsg of recentMessages) {
       const role = hMsg.role === 'assistant' || hMsg.role === 'model' ? 'assistant' : 'user';
       const cleanContent = (hMsg.content || '').trim();
       if (cleanContent) {
@@ -723,10 +858,20 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
     for (const fileObj of currentFilesToProcess) {
       try {
         const fileName = fileObj.name || 'attached_document';
-        let mime = fileObj.type || 'application/pdf';
+        const rawMime = fileObj.type || '';
+        let mime = resolveMimeType(fileName, rawMime);
         let base64 = fileObj.base64Data || '';
         let isText = false;
         let textContent = '';
+
+        // Format validation: verify supported document/image format
+        const isSupported = SUPPORTED_DOCUMENT_MIMES.has(mime) || 
+                            Boolean(fileName.match(/\.(pdf|xlsx|xls|csv|txt|png|jpe?g|webp|gif)$/i));
+        if (!isSupported) {
+          extractedFilesText += `\n\n[Validación de Archivo]: "${fileName}" tiene un formato no compatible (${mime || 'desconocido'}). Solo se procesan documentos PDF (.pdf), Excel (.xlsx, .xls), CSV (.csv), Texto (.txt) e Imágenes (.png, .jpg, .webp).`;
+          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: 0, format: 'unsupported_format_skipped' });
+          continue;
+        }
 
         const isDriveFile = (fileObj as any).isGoogleDrive || Boolean((fileObj as any).driveFileId) || (fileObj.url && (
           fileObj.url.includes('drive.google.com') || 
@@ -801,27 +946,55 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
           }
         }
 
-        if (isText) {
-          extractedFilesText += `\n\n[Attached Document: ${fileName}]\n\n${textContent}`;
-          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: textContent.length, format: 'inline_text' });
-        } else if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
+        if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
           if (base64) {
             try {
               const pdfBuffer = Buffer.from(base64, 'base64');
               const pdfData = await pdfParse(pdfBuffer);
               const pdfText = (pdfData.text || '').trim();
-              extractedFilesText += `\n\n[Attached PDF Document: ${fileName} (${pdfData.numpages || 1} pages)]\n${pdfText || '[PDF parsed: no text found]'}`;
+              extractedFilesText += `\n\n[Attached PDF Document: ${fileName} (${pdfData.numpages || 1} pages)]\n${pdfText || '[PDF parsed: no extractable text]'}`;
               parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: pdfText.length, format: 'pdf_extracted_text' });
               hasMedicalExam = true;
             } catch (pdfErr: any) {
               console.warn(`[PDF Parser] Error parsing ${fileName}:`, pdfErr);
-              extractedFilesText += `\n\n[Attached Document: ${fileName} - PDF text extraction encountered issue: ${pdfErr.message}]`;
+              extractedFilesText += `\n\n[Attached Document: ${fileName} - PDF binary processing issue: ${pdfErr.message}]`;
             }
           }
+        } else if (
+          mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+          mime === 'application/vnd.ms-excel' ||
+          fileName.toLowerCase().endsWith('.xlsx') ||
+          fileName.toLowerCase().endsWith('.xls')
+        ) {
+          if (base64) {
+            try {
+              const excelBuffer = Buffer.from(base64, 'base64');
+              const workbook = XLSX.read(excelBuffer, { type: 'buffer' });
+              const sheetSummaries: string[] = [];
+
+              for (const sheetName of workbook.SheetNames) {
+                const worksheet = workbook.Sheets[sheetName];
+                const sheetCsv = XLSX.utils.sheet_to_csv(worksheet);
+                if (sheetCsv && sheetCsv.trim().length > 0) {
+                  sheetSummaries.push(`--- HOJA: ${sheetName} ---\n${sheetCsv.trim().slice(0, 15000)}`);
+                }
+              }
+
+              const excelContent = sheetSummaries.join('\n\n') || '[Hoja de cálculo vacía]';
+              extractedFilesText += `\n\n[Attached Excel Spreadsheet: ${fileName} (${workbook.SheetNames.length} sheet(s))]\n${excelContent}`;
+              parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: excelContent.length, format: 'xlsx_parsed_table' });
+            } catch (xlsxErr: any) {
+              console.warn(`[Excel Parser] Error parsing ${fileName}:`, xlsxErr);
+              extractedFilesText += `\n\n[Attached Document: ${fileName} - Excel binary processing issue: ${xlsxErr.message}]`;
+            }
+          }
+        } else if (mime === 'text/csv' || mime === 'text/plain' || isText) {
+          extractedFilesText += `\n\n[Attached Document: ${fileName}]\n\n${textContent}`;
+          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: textContent.length, format: 'inline_text' });
         } else if (mime.startsWith('image/')) {
           hasMedicalExam = true;
-          extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image attached. Note: Vision analysis is currently unsupported in this configuration.]`;
-          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_flagged_for_vision' });
+          extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image provided via inline base64]`;
+          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_inline_data' });
         }
       } catch (e: any) {
         console.error(`[Multimodal] Error processing file "${fileObj.name || fileObj.url}":`, e);
@@ -947,34 +1120,52 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
             res.write(`data: ${JSON.stringify({ type: 'chunk', text: `${defaultConfirmation}\n\n` })}\n\n`);
           }
 
-          try {
-            console.log(`[ARIA Pipeline] Tool '${functionCallPayload.name}' executed. Continuing generation to answer user's original query in the same stream...`);
-            const continuationMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
-              ...llmMessages,
-              { role: 'assistant', content: defaultConfirmation },
-              { 
-                role: 'user', 
-                content: `[SISTEMA: La información de contexto ha sido registrada y guardada exitosamente. Ahora responde de manera completa, detallada y directa a la consulta o pregunta original del atleta, aplicando tus conocimientos de biomecánica, entrenamiento y salud estructural con enlaces Markdown clickeables a fuentes, sin mencionar herramientas internas.]` 
-              }
-            ];
+          const MAX_TOOL_RETRIES = 2;
+          let continuationSucceeded = false;
 
-            const continuationResult = await streamChat({
-              system: ariaSystemPrompt,
-              messages: continuationMessages,
-              tools: undefined, // Omit tools to prevent circular tool execution
-              signal: requestAbortController.signal,
-              onChunk: (chunk: string) => {
-                if (!isAborted && !res.writableEnded) {
-                  res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
+          for (let contAttempt = 0; contAttempt < MAX_TOOL_RETRIES; contAttempt++) {
+            if (isAborted || res.writableEnded) break;
+            try {
+              console.log(`[ARIA Pipeline] Tool '${functionCallPayload.name}' executed. Continuing generation (attempt ${contAttempt + 1}/${MAX_TOOL_RETRIES})...`);
+              const continuationMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+                ...llmMessages,
+                { role: 'assistant', content: defaultConfirmation },
+                { 
+                  role: 'user', 
+                  content: `[SISTEMA: La información de contexto ha sido registrada y guardada exitosamente. Ahora responde de manera completa, detallada y directa a la consulta o pregunta original del atleta, aplicando tus conocimientos de biomecánica, entrenamiento y salud estructural con enlaces Markdown clickeables a fuentes, sin mencionar herramientas internas.]` 
+                }
+              ];
+
+              const continuationResult = await streamChat({
+                system: ariaSystemPrompt,
+                messages: continuationMessages,
+                tools: undefined, // Omit tools to prevent circular tool execution
+                signal: requestAbortController.signal,
+                onChunk: (chunk: string) => {
+                  if (!isAborted && !res.writableEnded) {
+                    res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
+                  }
+                }
+              });
+
+              if (continuationResult.text) {
+                finalAnswerText = `${defaultConfirmation}\n\n${continuationResult.text}`;
+              }
+              continuationSucceeded = true;
+              break;
+            } catch (contErr: any) {
+              console.warn(`[ARIA Pipeline] Error in continuation stream after tool call (attempt ${contAttempt + 1}/${MAX_TOOL_RETRIES}):`, contErr?.message || contErr);
+              if (contAttempt === MAX_TOOL_RETRIES - 1 && !continuationSucceeded && !finalAnswerText) {
+                if (!res.writableEnded && !isAborted) {
+                  res.write(`data: ${JSON.stringify({ 
+                    type: 'error', 
+                    error: "Ocurrió un error al completar la respuesta tras registrar los datos. Por favor, intenta de nuevo." 
+                  })}\n\n`);
+                  res.end();
+                  return;
                 }
               }
-            });
-
-            if (continuationResult.text) {
-              finalAnswerText = `${defaultConfirmation}\n\n${continuationResult.text}`;
             }
-          } catch (contErr: any) {
-            console.warn("[ARIA Pipeline] Error in continuation stream after tool call:", contErr);
           }
         }
 
