@@ -1110,15 +1110,19 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
         ))
       );
 
-      // Clean up incomplete or empty streaming message placeholder
-      setMessages(prev => prev.filter(m => m.id !== streamingAssistantId || (m.content && m.content.trim().length > 0)));
+      // Clean up incomplete or empty streaming message placeholder safely
+      setMessages(prev => prev.filter(m => m.id !== streamingAssistantId || (Boolean(m.content) && typeof m.content === 'string' && m.content.trim().length > 0)));
       
+      const safeErrorDetail = typeof err?.message === 'string' && err.message.trim().length > 0
+        ? err.message.trim()
+        : 'Server connection error';
+
       const errorMsg: ChatMessage = {
         id: `err-${Date.now()}`,
         role: 'assistant',
         content: isTimeout
           ? `### ⏱️ La solicitud tardó demasiado, intenta de nuevo\n\nEl servidor superó el tiempo máximo de espera sin completar la respuesta.\n\n*Hacé clic en **"Reintentar consulta"** para volver a intentarlo.*`
-          : `### ❌ Analysis failed — please try again\n\n**Error details**: \`${err?.message || 'Server connection error'}\`\n\n*Click **"Retry Query"** below to re-submit your message.*`,
+          : `### ❌ Analysis failed — please try again\n\n**Error details**: \`${safeErrorDetail}\`\n\n*Click **"Retry Query"** below to re-submit your message.*`,
         timestamp: new Date().toISOString()
       };
       setMessages(prev => [...prev, errorMsg]);
@@ -1128,6 +1132,7 @@ La programación táctica del evento, el desarrollo de fuerza y el resguardo est
       activeAbortControllerRef.current = null;
       setIsSlowWarning(false);
       setIsLoading(false);
+      setIsUploading(false);
       isSendingRef.current = false;
       setStatusLog('');
     }

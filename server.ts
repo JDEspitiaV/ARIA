@@ -6,8 +6,7 @@ import http from "http";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { streamChat, generateJson, StreamResult } from "./src/services/llmProvider";
-// @ts-ignore
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import { GoogleGenAI } from "@google/genai";
 import * as XLSX from "xlsx";
 import { 
   fetchAllScientificLiteratureRaw, 
@@ -56,7 +55,7 @@ import {
 } from "firebase-admin/firestore";
 import { 
   normalizeProfile
-} from "./src/lib/firebase";
+} from "./src/lib/normalizeProfile";
 
 dotenv.config();
 
@@ -113,44 +112,111 @@ function loadPersistedInferredContexts() {
 const rollingSummaryStore = new Map<string, string>();
 
 /**
+ * Analyzes multimodal documents (PDFs, biomechanical graphics, clinical reports, images)
+ * using the official Google Gen AI SDK (@google/genai) with inlineData (base64).
+ * Completely eliminates fragile local PDF/binary parsers.
+ */
+async function extractDocumentWithGemini(
+  fileName: string,
+  mimeType: string,
+  base64Data: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.LLM_API_KEY;
+  if (!apiKey) {
+    throw new Error("Clave de Gemini API no configurada para extracción de documentos");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+  const prompt = `Actúa como ARIA, el sistema de inteligencia biomecánica de élite para atletismo de STRIDES.
+Analiza con máxima precisión técnica este documento o gráfica adjunta ("${fileName}").
+
+Extrae y estructura exhaustivamente:
+1. IDENTIFICACIÓN: Nombre del atleta, fecha de evaluación, disciplina atlética, evaluador o laboratorio.
+2. MÉTRICAS CINÉTICAS Y BIOMECÁNICAS:
+   - Evaluaciones de salto (CMJ, SJ, Drop Jump): Altura de salto (cm), tiempo de contacto (ms), Reactive Strength Index (RSI), potencia pico (W/kg), fuerza concéntrica/excéntrica, asimetría de extremidades.
+   - Dinamometría y evaluaciones isocinéticas (ej. isocinesia a 30°/s, 60°/s, dinamometría prono/supino): Torques pico (Nm), ratios isquiosurales/cuádriceps (H:Q ratio), déficit bilateral (%) entre pierna dominante y no dominante.
+   - Evaluaciones de sprint y carrera: Tiempos parciales, velocidades pico (m/s), longitud y cadencia de paso, fuerzas de impacto.
+3. CURVAS Y GRÁFICAS: Si se muestran gráficas de fuerza-tiempo, curvas de torque o diagramas angulares, describe la forma de las curvas, pendientes de desarrollo de fuerza (RFD) y puntos de inflexión.
+4. INFORME CLÍNICO / MÉDICO: Si hay resonancias, radiografías o ecografías, extrae los hallazgos anatómicos objetivos y notas de rehabilitación.
+5. RESUMEN DE TELEMETRÍA: Datos numéricos concretos para su integración en el perfil del atleta.
+
+REGLA: Fidelidad estricta. Si un dato no es legible, indícalo expresamente.`;
+
+  const contents = [
+    {
+      role: 'user',
+      parts: [
+        { text: prompt },
+        {
+          inlineData: {
+            mimeType,
+            data: base64Data
+          }
+        }
+      ]
+    }
+  ];
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents,
+      config: { temperature: 0.1 }
+    });
+    return response.text?.trim() || '';
+  } catch (err: any) {
+    // If gemini-1.5-flash returns model not found / deprecated, fall back to gemini-3.8-flash
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents,
+      config: { temperature: 0.1 }
+    });
+    return response.text?.trim() || '';
+  }
+}
+
+/**
  * Implements Rolling Summary strategy:
  * If chat history has >= 10 messages:
  * - Takes older messages (all except the last 4-6)
- * - Summarizes them into a dense "Memory Block" with a strict timeout (max 5s) and 2 retries
+ * - Summarizes them into a dense "Memory Block" with a 45s timeout and 2 retries
  * - Combines with any previous rolling summary
  * - Stores the accumulated summary in rollingSummaryStore
  * - Returns the accumulated summary and the last 4-6 recent messages
+ * - Fallback: if summary fails after 2 attempts, uses raw last 10 messages instead of crashing or looping
  */
 async function processRollingSummary(
   threadKey: string,
   historicalMessages: any[]
 ): Promise<{ accumulatedSummary: string; recentMessages: any[] }> {
-  const THRESHOLD = 10;
-  const RECENT_COUNT = 6;
+  try {
+    const THRESHOLD = 10;
+    const RECENT_COUNT = 6;
 
-  // If total historical turns is below threshold, no summarization needed yet
-  if (!historicalMessages || historicalMessages.length < (THRESHOLD - 1)) {
-    const existing = rollingSummaryStore.get(threadKey) || '';
-    return {
-      accumulatedSummary: existing,
-      recentMessages: historicalMessages
-    };
-  }
+    // If total historical turns is below threshold, no summarization needed yet
+    if (!historicalMessages || historicalMessages.length < (THRESHOLD - 1)) {
+      const existing = rollingSummaryStore.get(threadKey) || '';
+      return {
+        accumulatedSummary: existing,
+        recentMessages: historicalMessages || []
+      };
+    }
 
-  // Split into older messages to compress and recent messages to keep verbatim (last 4-6)
-  const olderMessages = historicalMessages.slice(0, historicalMessages.length - RECENT_COUNT);
-  const recentMessages = historicalMessages.slice(historicalMessages.length - RECENT_COUNT);
+    // Split into older messages to compress and recent messages to keep verbatim (last 4-6)
+    const olderMessages = historicalMessages.slice(0, historicalMessages.length - RECENT_COUNT);
+    const recentMessages = historicalMessages.slice(historicalMessages.length - RECENT_COUNT);
 
-  const existingSummary = rollingSummaryStore.get(threadKey) || '';
+    const existingSummary = rollingSummaryStore.get(threadKey) || '';
 
-  // Prepare text to summarize
-  const textToSummarize = olderMessages.map((m: any) => {
-    const r = m.role === 'assistant' || m.role === 'model' ? 'ARIA' : 'ATLETA';
-    const c = (m.content || '').slice(0, 300);
-    return `${r}: ${c}`;
-  }).join('\n');
+    // Prepare text to summarize
+    const textToSummarize = olderMessages.map((m: any) => {
+      const r = m.role === 'assistant' || m.role === 'model' ? 'ARIA' : 'ATLETA';
+      const c = (typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')).slice(0, 400);
+      return `${r}: ${c}`;
+    }).join('\n');
 
-  const prompt = `Condense and update this running athletic coaching conversation summary into a dense, factual "Memory Block".
+    const prompt = `Condense and update this running athletic coaching conversation summary into a dense, factual "Memory Block".
 Preserve all key athlete metrics, PRs, training phases, kinetic deficiencies, injury history, and coaching decisions discussed.
 
 ${existingSummary ? `EXISTING ACCUMULATED SUMMARY:\n${existingSummary}\n\n` : ''}NEW OLDER MESSAGES TO INTEGRATE:
@@ -158,41 +224,70 @@ ${textToSummarize}
 
 Produce a dense, structured Memory Block in Spanish capturing all critical context. Keep it under 200 words.`;
 
-  let newSummary = existingSummary;
-  const MAX_SUMMARY_RETRIES = 2;
-  const SUMMARY_TIMEOUT_MS = 5000;
+    let newSummary = existingSummary;
+    const MAX_SUMMARY_RETRIES = 2;
+    const SUMMARY_TIMEOUT_MS = 45000; // Strictly 45 seconds to give background summarization ample time
 
-  for (let attempt = 0; attempt < MAX_SUMMARY_RETRIES; attempt++) {
-    const timeoutController = new AbortController();
-    const timeoutId = setTimeout(() => {
-      try { timeoutController.abort(new Error('Summary timeout')); } catch {}
-    }, SUMMARY_TIMEOUT_MS);
+    for (let attempt = 0; attempt < MAX_SUMMARY_RETRIES; attempt++) {
+      const timeoutController = new AbortController();
+      const timeoutId = setTimeout(() => {
+        try { 
+          timeoutController.abort(new Error(`Summary timeout of ${SUMMARY_TIMEOUT_MS}ms exceeded`)); 
+        } catch {}
+      }, SUMMARY_TIMEOUT_MS);
 
-    try {
-      const summaryResult = await generateJson<{ summary?: string; text?: string }>({
-        system: "Eres un sintetizador experto de telemetría y memoria atlética para STRIDES. Genera un bloque denso de memoria en JSON con la propiedad 'summary'.",
-        user: prompt,
-        signal: timeoutController.signal
-      });
+      try {
+        const summaryResult = await generateJson<{ summary?: string; text?: string }>({
+          system: "Eres un sintetizador experto de telemetría y memoria atlética para STRIDES. Genera un bloque denso de memoria en JSON con la propiedad 'summary'.",
+          user: prompt,
+          signal: timeoutController.signal,
+          timeoutMs: SUMMARY_TIMEOUT_MS
+        });
 
-      const extracted = summaryResult.summary || summaryResult.text?.trim();
-      if (extracted && extracted.length > 20) {
-        newSummary = extracted;
-        rollingSummaryStore.set(threadKey, newSummary);
-        console.log(`[Rolling Summary] Successfully updated memory block for thread '${threadKey}' (${newSummary.length} chars, summarized ${olderMessages.length} messages)`);
-        break;
+        const extracted = summaryResult.summary || summaryResult.text?.trim();
+        if (extracted && extracted.length > 20) {
+          newSummary = extracted;
+          rollingSummaryStore.set(threadKey, newSummary);
+          console.log(`[Rolling Summary] Successfully updated memory block for thread '${threadKey}' (${newSummary.length} chars, summarized ${olderMessages.length} messages)`);
+          break;
+        }
+      } catch (sumErr: any) {
+        const isAbort = sumErr?.name === 'AbortError' || 
+                        sumErr?.message?.toLowerCase().includes('aborted') || 
+                        sumErr?.message?.toLowerCase().includes('timeout') ||
+                        timeoutController.signal.aborted;
+
+        if (isAbort) {
+          console.warn(`[Rolling Summary] Attempt ${attempt + 1}/${MAX_SUMMARY_RETRIES} aborted (timeout of ${SUMMARY_TIMEOUT_MS}ms exceeded). Caught cleanly.`);
+        } else {
+          console.warn(`[Rolling Summary] Attempt ${attempt + 1}/${MAX_SUMMARY_RETRIES} failed:`, sumErr?.message || sumErr);
+        }
+      } finally {
+        clearTimeout(timeoutId);
       }
-    } catch (sumErr: any) {
-      console.warn(`[Rolling Summary] Attempt ${attempt + 1}/${MAX_SUMMARY_RETRIES} failed or timed out:`, sumErr?.message || sumErr);
-    } finally {
-      clearTimeout(timeoutId);
     }
-  }
 
-  return {
-    accumulatedSummary: newSummary,
-    recentMessages
-  };
+    // Fallback: If summarization failed after 2 attempts, just use the raw last 10 messages
+    // instead of crashing or looping, keeping main chat flow completely uninterrupted
+    if (!newSummary) {
+      console.warn(`[Rolling Summary] Summary not produced after ${MAX_SUMMARY_RETRIES} attempts. Falling back gracefully to raw last 10 messages without blocking main chat flow.`);
+      return {
+        accumulatedSummary: '',
+        recentMessages: historicalMessages.slice(-10)
+      };
+    }
+
+    return {
+      accumulatedSummary: newSummary,
+      recentMessages
+    };
+  } catch (pipelineErr: any) {
+    console.error(`[Rolling Summary] Unexpected error in rolling summary pipeline:`, pipelineErr);
+    return {
+      accumulatedSummary: rollingSummaryStore.get(threadKey) || '',
+      recentMessages: (historicalMessages || []).slice(-10)
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -948,16 +1043,23 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
 
         if (mime === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf')) {
           if (base64) {
+            hasMedicalExam = true;
             try {
-              const pdfBuffer = Buffer.from(base64, 'base64');
-              const pdfData = await pdfParse(pdfBuffer);
-              const pdfText = (pdfData.text || '').trim();
-              extractedFilesText += `\n\n[Attached PDF Document: ${fileName} (${pdfData.numpages || 1} pages)]\n${pdfText || '[PDF parsed: no extractable text]'}`;
-              parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: pdfText.length, format: 'pdf_extracted_text' });
-              hasMedicalExam = true;
+              console.log(`[Multimodal PDF] Processing "${fileName}" with Google Gen AI SDK (@google/genai)...`);
+              const extractedPdfText = await extractDocumentWithGemini(fileName, mime, base64);
+              if (extractedPdfText && extractedPdfText.trim().length > 0) {
+                extractedFilesText += `\n\n[DOCUMENTO PDF ADJUNTO ANALIZADO POR IA MULTIMODAL: "${fileName}"]\n${extractedPdfText}`;
+                parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: extractedPdfText.length, format: 'gemini_multimodal_pdf' });
+                console.log(`[Multimodal PDF] Successfully extracted ${extractedPdfText.length} chars from "${fileName}".`);
+              } else {
+                extractedFilesText += `\n\n[Documento PDF: ${fileName}]: Documento recibido y analizado pero no contiene datos biométricos legibles.`;
+                parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: 0, format: 'pdf_empty' });
+              }
             } catch (pdfErr: any) {
-              console.warn(`[PDF Parser] Error parsing ${fileName}:`, pdfErr);
-              extractedFilesText += `\n\n[Attached Document: ${fileName} - PDF binary processing issue: ${pdfErr.message}]`;
+              console.warn(`[Multimodal PDF] Gemini analysis failed for ${fileName}:`, pdfErr.message || pdfErr);
+              // Gracefully reject the file with a clear message, DO NOT crash the server
+              extractedFilesText += `\n\n[Documento PDF: ${fileName}]: El documento fue recibido en el servidor pero la extracción visual de PDFs falló (${pdfErr.message || 'error de proveedor'}). Puedes subir una captura de pantalla (.png/.jpg) del reporte o gráficas para lectura inmediata.`;
+              parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: 0, format: 'pdf_extraction_fallback' });
             }
           }
         } else if (
@@ -993,8 +1095,23 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
           parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: textContent.length, format: 'inline_text' });
         } else if (mime.startsWith('image/')) {
           hasMedicalExam = true;
-          extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image provided via inline base64]`;
-          parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_inline_data' });
+          if (base64) {
+            try {
+              console.log(`[Multimodal Image] Processing image "${fileName}" (${mime}) with Google Gen AI SDK...`);
+              const extractedImgText = await extractDocumentWithGemini(fileName, mime, base64);
+              if (extractedImgText && extractedImgText.trim().length > 0) {
+                extractedFilesText += `\n\n[IMAGEN / EXAMEN CLÍNICO ADJUNTO ANALIZADO: "${fileName}"]\n${extractedImgText}`;
+                parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: extractedImgText.length, format: 'gemini_multimodal_image' });
+              } else {
+                extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image provided via inline base64]`;
+                parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_inline_data' });
+              }
+            } catch (imgErr: any) {
+              console.warn(`[Multimodal Image] Direct Gemini extraction error for "${fileName}":`, imgErr.message || imgErr);
+              extractedFilesText += `\n\n[Attached Image: ${fileName} (${mime}) - Image registered in session]`;
+              parsedFilesLog.push({ name: fileName, type: mime, sizeOrChars: base64.length, format: 'image_inline_data' });
+            }
+          }
         }
       } catch (e: any) {
         console.error(`[Multimodal] Error processing file "${fileObj.name || fileObj.url}":`, e);
@@ -1054,12 +1171,18 @@ ${currentTurnMsg.content || userQuery}${extractedFilesText}${fileAnalysisMandate
 
     const llmStart = Date.now();
     let streamResult: StreamResult;
+    const hasUploadedFiles = parsedFilesLog.length > 0;
+    const isTextOnlyModel = !(process.env.LLM_MODEL || '').toLowerCase().includes('gemini') && 
+                            !(process.env.LLM_MODEL || '').toLowerCase().includes('vision');
+    const dynamicModel = hasUploadedFiles && isTextOnlyModel ? 'gemini-1.5-flash' : undefined;
+
     try {
       streamResult = await streamChat({
         system: ariaSystemPrompt,
         messages: llmMessages,
         tools: ARIA_TOOLS,
         signal: requestAbortController.signal,
+        preferredModel: dynamicModel,
         onChunk: (textChunk: string) => {
           if (!isAborted && !res.writableEnded) {
             res.write(`data: ${JSON.stringify({ type: 'chunk', text: textChunk })}\n\n`);

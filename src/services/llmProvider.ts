@@ -9,7 +9,11 @@ import OpenAI from 'openai';
 
 export interface ChatMessageParam {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+    | any
+  >;
 }
 
 export interface StreamChatParams {
@@ -36,6 +40,7 @@ export interface GenerateJsonParams {
   user: string;
   signal?: AbortSignal;
   model?: string;
+  timeoutMs?: number;
 }
 
 function getOpenAIClient(): OpenAI {
@@ -99,7 +104,7 @@ export async function streamChat({
   for (const m of messages) {
     fullMessages.push({
       role: m.role as 'user' | 'assistant' | 'system',
-      content: m.content || ' '
+      content: (m.content as any) || ' '
     });
   }
 
@@ -291,7 +296,8 @@ export async function generateJson<T = any>({
   system,
   user,
   signal,
-  model: specifiedModel
+  model: specifiedModel,
+  timeoutMs: customTimeoutMs
 }: GenerateJsonParams): Promise<T & { text: string }> {
   const client = getOpenAIClient();
   const primaryModel = specifiedModel || process.env.LLM_MODEL || 'deepseek-chat';
@@ -324,7 +330,7 @@ export async function generateJson<T = any>({
 
       const controller = new AbortController();
       let timedOut = false;
-      const timeoutMs = 15000;
+      const timeoutMs = customTimeoutMs || 45000;
       const timeoutId = setTimeout(() => {
         timedOut = true;
         try {
