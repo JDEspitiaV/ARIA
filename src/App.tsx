@@ -54,31 +54,22 @@ import { PeriodizationCalendarModal } from './components/PeriodizationCalendarMo
 export const evaluateOnboardingDecision = (profile: AthleteProfile | null): OnboardingGateDecision => {
   if (!profile) return { showModal: false, mode: 'full', hasCoreData: false, hasInjuryHistory: false };
 
-  // If already marked onboarded, do NOT force modal on return sessions
-  if (profile.onboardingComplete) {
+  // If onboardingComplete is true, NEVER show modal regardless of any other fields
+  if (profile.onboardingComplete === true) {
     return { showModal: false, mode: 'none', hasCoreData: true, hasInjuryHistory: true };
   }
 
   const hasCoreData = Boolean(
     profile.anthropometrics &&
     profile.anthropometrics.heightCm > 0 &&
-    profile.anthropometrics.weightKg > 0 &&
-    ((profile.targetEvents && profile.targetEvents.length > 0) || (profile.personalBests && Object.keys(profile.personalBests).length > 0))
+    profile.anthropometrics.weightKg > 0
   );
 
-  const hasInjuryHistory = Boolean(
-    profile.injuryHistoryReviewed ||
-    (profile.injuryHistory && profile.injuryHistory.length > 0) ||
-    (profile.activeInjuries && profile.activeInjuries.length > 0)
-  );
-
-  if (!hasCoreData) {
-    return { showModal: true, mode: 'full', hasCoreData, hasInjuryHistory };
-  } else if (!hasInjuryHistory) {
-    return { showModal: true, mode: 'partial', hasCoreData, hasInjuryHistory };
-  } else {
-    return { showModal: false, mode: 'none', hasCoreData, hasInjuryHistory };
+  if (hasCoreData) {
+    return { showModal: false, mode: 'none', hasCoreData: true, hasInjuryHistory: true };
   }
+
+  return { showModal: true, mode: 'full', hasCoreData: false, hasInjuryHistory: false };
 };
 
 export default function App() {
@@ -112,7 +103,7 @@ export default function App() {
 
   // Stable key based on primitive values to prevent gate re-evaluations on every render
   const athleteGateKey = athlete 
-    ? `${athlete.id}_${athlete.anthropometrics?.heightCm}_${athlete.anthropometrics?.weightKg}_${athlete.anthropometrics?.inseamCm}_${(athlete.targetEvents || []).join(',')}_${(athlete.injuryHistory || []).length}_${athlete.injuryHistoryReviewed}`
+    ? `${athlete.id}_${athlete.onboardingComplete}_${athlete.anthropometrics?.heightCm || 0}_${athlete.anthropometrics?.weightKg || 0}`
     : 'none';
 
   // Derive gateDecision with memoization keyed on stable primitive values

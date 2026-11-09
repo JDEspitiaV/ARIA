@@ -44,18 +44,15 @@ export function normalizeProfile(athleteId: string, raw: any): { profile: Athlet
   }
 
   // Fallback to legacy biometrics or top-level if anthropometrics is absent or incomplete
-  if ((!heightCm || !weightKg || inseamCm === null) && (rawBio || raw.height || raw.weight || raw.inseam)) {
-    if (!rawAnthro) needsSave = true;
-    if (!heightCm) {
-      heightCm = parseFloat(rawBio?.height ?? rawBio?.heightCm ?? raw.height ?? raw.heightCm) || 0;
-    }
-    if (!weightKg) {
-      weightKg = parseFloat(rawBio?.weight ?? rawBio?.weightKg ?? raw.weight ?? raw.weightKg) || 0;
-    }
-    if (inseamCm === null) {
-      const parsedInseam = parseFloat(rawBio?.inseam ?? rawBio?.inseamCm ?? raw.inseam ?? raw.inseamCm);
-      inseamCm = !isNaN(parsedInseam) && parsedInseam > 0 ? parsedInseam : null;
-    }
+  if (!heightCm) {
+    heightCm = parseFloat(rawBio?.heightCm ?? rawBio?.height ?? raw.heightCm ?? raw.height) || 0;
+  }
+  if (!weightKg) {
+    weightKg = parseFloat(rawBio?.weightKg ?? rawBio?.weight ?? raw.weightKg ?? raw.weight) || 0;
+  }
+  if (inseamCm === null) {
+    const parsedInseam = parseFloat(rawBio?.inseamCm ?? rawBio?.inseam ?? raw.inseamCm ?? raw.inseam);
+    inseamCm = !isNaN(parsedInseam) && parsedInseam > 0 ? parsedInseam : null;
   }
 
   // Resolve age from birthYear / birthdate if not already resolved from anthropometrics
@@ -198,8 +195,7 @@ export function normalizeProfile(athleteId: string, raw: any): { profile: Athlet
     clinicalHistory: Array.isArray(raw.clinicalHistory) ? raw.clinicalHistory : [],
     geneticPredispositions: Array.isArray(raw.geneticPredispositions) ? raw.geneticPredispositions : [],
     videoAnalyses: Array.isArray(raw.videoAnalyses) ? raw.videoAnalyses : [],
-    coachMethodologyDoc: raw.coachMethodologyDoc || undefined,
-    onboardingComplete: Boolean(raw.onboardingComplete),
+    onboardingComplete: raw.onboardingComplete === true ? true : Boolean(raw.onboardingComplete || raw.isOnboarded || raw.onboarded),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString()
   };
 

@@ -58,7 +58,7 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
 export const auth = getAuth(app);
-export const db = getFirestore(app, (appletConfig as any).firestoreDatabaseId || "(default)");
+export const db = getFirestore(app, "ai-studio-2e02a69f-fc8d-46cd-bbc1-146c884acf19");
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
