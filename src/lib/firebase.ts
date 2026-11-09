@@ -58,7 +58,10 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
 export const auth = getAuth(app);
-export const db = getFirestore(app, "ai-studio-2e02a69f-fc8d-46cd-bbc1-146c884acf19");
+const configuredDbId = (appletConfig as any).firestoreDatabaseId;
+export const db = (configuredDbId && configuredDbId !== '(default)')
+  ? getFirestore(app, configuredDbId)
+  : getFirestore(app);
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
@@ -209,24 +212,20 @@ export async function signInWithSSO(providerType: 'google' | 'microsoft' | 'appl
  * Fetches real athlete profile from Firestore. Migrates legacy schemas transparently on read.
  */
 export async function getAthleteProfile(athleteId: string): Promise<AthleteProfile | null> {
-  try {
-    const profileRef = doc(db, 'users', athleteId);
-    const snap = await getDoc(profileRef);
-    if (snap.exists()) {
-      const raw = snap.data();
-      const { profile, needsSave } = normalizeProfile(athleteId, raw);
-      
-      // One-time migration backfill: persist normalized shape back to Firestore
-      if (needsSave || !raw.anthropometrics || !raw.targetEvents) {
-        try {
-          await updateAthleteProfile(athleteId, profile);
-        } catch {}
-      }
-      
-      return profile;
+  const profileRef = doc(db, 'users', athleteId);
+  const snap = await getDoc(profileRef);
+  if (snap.exists()) {
+    const raw = snap.data();
+    const { profile, needsSave } = normalizeProfile(athleteId, raw);
+    
+    // One-time migration backfill: persist normalized shape back to Firestore
+    if (needsSave || !raw.anthropometrics || !raw.targetEvents) {
+      try {
+        await updateAthleteProfile(athleteId, profile);
+      } catch {}
     }
-  } catch (err) {
-    console.warn('[Firestore] Error getting athlete profile:', err);
+    
+    return profile;
   }
   return null;
 }

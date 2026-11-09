@@ -47,6 +47,7 @@ import { AuthModal } from './components/AuthModal';
 import { UnsubscribedOnboardingModal } from './components/UnsubscribedOnboardingModal';
 import { EventStandardsModal } from './components/EventStandardsModal';
 import { PeriodizationCalendarModal } from './components/PeriodizationCalendarModal';
+import { WifiOff, RefreshCw } from 'lucide-react';
 
 // Evaluates onboarding status based on explicit data completeness:
 // a. hasCoreData: heightCm > 0 && weightKg > 0 && inseamCm > 0 && targetEvents.length > 0 (Steps 1-3 baseline completed)
@@ -94,6 +95,7 @@ export default function App() {
   const [inferredContext, setInferredContext] = useState<InferredTrainingContext | null>(null);
   const [onboardingMode, setOnboardingMode] = useState<OnboardingGateMode>('full');
   const [isProfileLoading, setIsProfileLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // Periodization Context (Real-time macro/meso/taper evaluation)
   const periodizationContext = useMemo(() => {
@@ -261,7 +263,12 @@ export default function App() {
         setCurrentUser(user);
         setShowAuthModal(false);
         setIsProfileLoading(true);
+        setConnectionError(null);
         try {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            throw new Error('El dispositivo está sin conexión a internet.');
+          }
+
           // Direct read from Firestore `/users/{uid}`
           let profile = await getAthleteProfile(user.uid);
           if (!profile) {
@@ -295,8 +302,22 @@ export default function App() {
           
           // Load threads & message history
           await loadUserThreads(user.uid);
-        } catch (initErr) {
+        } catch (initErr: any) {
           console.error('[Auth Init] Error loading athlete data:', initErr);
+          const errMsg = initErr?.message || String(initErr || '');
+          const isOfflineOrDbError = 
+            (typeof navigator !== 'undefined' && !navigator.onLine) ||
+            errMsg.includes('offline') || 
+            errMsg.includes('not found') || 
+            errMsg.includes('failed to get document') ||
+            initErr?.code === 'unavailable';
+          
+          if (isOfflineOrDbError) {
+            setShowOnboardingModal(false);
+            setConnectionError(
+              'No se pudo conectar con la base de datos de STRIDES. Por favor verifica tu conexión a internet.'
+            );
+          }
         } finally {
           setIsProfileLoading(false);
           setAuthInitialized(true);
@@ -307,6 +328,7 @@ export default function App() {
         setAthlete(null);
         setShowAuthModal(true);
         setShowOnboardingModal(false);
+        setConnectionError(null);
         setIsProfileLoading(false);
         setAuthInitialized(true);
       }
@@ -491,18 +513,45 @@ export default function App() {
     setShowOnboardingModal(true);
   };
 
+  if (connectionError) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mb-4 text-amber-400">
+          <WifiOff className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-zinc-100 mb-2">Error de Conexión</h2>
+        <p className="max-w-md text-sm text-zinc-400 mb-6 font-mono leading-relaxed">
+          {connectionError}
+        </p>
+        <button
+          onClick={() => {
+            setConnectionError(null);
+            setIsProfileLoading(true);
+            window.location.reload();
+          }}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-900/20 cursor-pointer"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Reintentar Conexión
+        </button>
+      </div>
+    );
+  }
+
+  // Strict loading gate: blocks rendering until Auth and Firestore profile read have completely resolved
+  if (isProfileLoading || !authInitialized || currentUser === undefined) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center font-sans">
+        <div className="flex items-center gap-3 text-emerald-400 font-mono text-sm">
+          <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+          <span>STRIDES High-Performance Engine Initializing...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-zinc-950">
-      
-      {/* Zero-Flash Loading Cover: Gated on full Firestore read */}
-      {(!authInitialized || isProfileLoading || currentUser === undefined) && (
-        <div className="fixed inset-0 z-50 bg-zinc-950 flex flex-col items-center justify-center font-sans">
-          <div className="flex items-center gap-3 text-emerald-400 font-mono text-sm">
-            <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-            <span>STRIDES High-Performance Engine Initializing...</span>
-          </div>
-        </div>
-      )}
 
       {/* Step 1: Authentication Gate (Only when unauthenticated after auth check completes) */}
       {currentUser === null && authInitialized && showAuthModal && (
