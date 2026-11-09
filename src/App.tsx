@@ -22,6 +22,7 @@ import {
   joinClubByCode,
   leaveClub
 } from './lib/firebase';
+import { normalizeProfile } from './lib/normalizeProfile';
 import { 
   AthleteProfile, 
   ChatMessage, 
@@ -53,32 +54,23 @@ import { PeriodizationCalendarModal } from './components/PeriodizationCalendarMo
 export const evaluateOnboardingDecision = (profile: AthleteProfile | null): OnboardingGateDecision => {
   if (!profile) return { showModal: false, mode: 'full', hasCoreData: false, hasInjuryHistory: false };
 
+  // If already marked onboarded, do NOT force modal on return sessions
+  if (profile.onboardingComplete) {
+    return { showModal: false, mode: 'none', hasCoreData: true, hasInjuryHistory: true };
+  }
+
   const hasCoreData = Boolean(
     profile.anthropometrics &&
     profile.anthropometrics.heightCm > 0 &&
     profile.anthropometrics.weightKg > 0 &&
-    profile.anthropometrics.inseamCm !== null &&
-    profile.anthropometrics.inseamCm !== undefined &&
-    profile.anthropometrics.inseamCm > 0 &&
-    profile.targetEvents &&
-    profile.targetEvents.length > 0
+    ((profile.targetEvents && profile.targetEvents.length > 0) || (profile.personalBests && Object.keys(profile.personalBests).length > 0))
   );
 
   const hasInjuryHistory = Boolean(
+    profile.injuryHistoryReviewed ||
     (profile.injuryHistory && profile.injuryHistory.length > 0) ||
-    profile.injuryHistoryReviewed
+    (profile.activeInjuries && profile.activeInjuries.length > 0)
   );
-
-  console.log('[STRIDES GATE] Evaluating profile payload for routing:', JSON.stringify(profile, null, 2));
-  console.log('[STRIDES GATE] Gating components:', {
-    hasAnthro: Boolean(profile.anthropometrics),
-    heightCm: profile.anthropometrics?.heightCm,
-    weightKg: profile.anthropometrics?.weightKg,
-    inseamCm: profile.anthropometrics?.inseamCm,
-    targetEvents: profile.targetEvents,
-    hasCoreData,
-    hasInjuryHistory
-  });
 
   if (!hasCoreData) {
     return { showModal: true, mode: 'full', hasCoreData, hasInjuryHistory };
@@ -90,7 +82,7 @@ export const evaluateOnboardingDecision = (profile: AthleteProfile | null): Onbo
 };
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null | undefined>(undefined);
   const [authInitialized, setAuthInitialized] = useState(false);
   const [athlete, setAthlete] = useState<AthleteProfile | null>(null);
   
@@ -251,22 +243,18 @@ export default function App() {
         if (count > 0) console.log(`[48h-CLEANUP] Cleaned ${count} expired files for user ${userId}`);
       }).catch(err => console.warn('[48h-CLEANUP] Background check error:', err));
 
-      // Commercial LLM UX (ChatGPT/Claude style):
-      // On page load/open, ALWAYS present a fresh session with greeting.
-      // If the most recent thread is purely empty or only has an unsent greeting, attach to it.
-      // If the thread has real conversation history (messageCount > 1), NEVER auto-load it on open — user accesses it via sidebar.
+      // Restore most recent active thread and full conversation history
       const latestThread = userThreads[0];
-      if (latestThread && (latestThread.messageCount === 0 || (latestThread.messageCount === 1 && latestThread.lastMessagePreview?.includes('listo para tu sesión')))) {
+      if (latestThread) {
         setActiveThreadId(latestThread.id);
         const threadMsgs = await getThreadMessages(userId, latestThread.id);
-        if (threadMsgs.length === 0) {
-          setMessages([greetingMsg]);
-          await saveThreadMessage(userId, latestThread.id, greetingMsg);
+        if (threadMsgs && threadMsgs.length > 0) {
+          setMessages(threadMsgs);
         } else {
           setMessages([greetingMsg]);
+          await saveThreadMessage(userId, latestThread.id, greetingMsg);
         }
       } else {
-        // Fresh new session state on open
         setActiveThreadId(null);
         setMessages([greetingMsg]);
       }
@@ -278,46 +266,58 @@ export default function App() {
   // Monitor Firebase Auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      setAuthInitialized(true);
-
       if (user) {
+        setCurrentUser(user);
         setShowAuthModal(false);
         setIsProfileLoading(true);
-        
-        // Direct read from Firestore `/users/{uid}`
-        const profile = await getAthleteProfile(user.uid);
-        setAthlete(profile);
-
-        // Load periodization plan & competition calendar & inferred context
-        const isClub = Boolean(profile?.clubId && profile.clubId.trim().length > 0);
         try {
-          const [userPlan, userCal, userInferred] = await Promise.all([
-            getAthletePeriodizationPlan(user.uid),
-            getCompetitionCalendar(user.uid),
-            getInferredTrainingContext(user.uid)
-          ]);
-          setPeriodizationPlan(userPlan || (isClub ? null : getDefaultPeriodizationPlan(user.uid)));
-          setCompetitionCalendar(userCal || (isClub ? null : getDefaultCompetitionCalendar(user.uid)));
-          setInferredContext(userInferred);
-        } catch (planErr) {
-          console.warn('Error loading periodization plan or inferred context:', planErr);
-          setPeriodizationPlan(isClub ? null : getDefaultPeriodizationPlan(user.uid));
-          setCompetitionCalendar(isClub ? null : getDefaultCompetitionCalendar(user.uid));
+          // Direct read from Firestore `/users/{uid}`
+          let profile = await getAthleteProfile(user.uid);
+          if (!profile) {
+            profile = normalizeProfile(user.uid, {
+              name: user.displayName || user.email?.split('@')[0] || 'Atleta',
+              email: user.email || ''
+            }).profile;
+          }
+          setAthlete(profile);
+
+          // Load periodization plan & competition calendar & inferred context
+          const isClub = Boolean(profile?.clubId && profile.clubId.trim().length > 0);
+          try {
+            const [userPlan, userCal, userInferred] = await Promise.all([
+              getAthletePeriodizationPlan(user.uid),
+              getCompetitionCalendar(user.uid),
+              getInferredTrainingContext(user.uid)
+            ]);
+            setPeriodizationPlan(userPlan || (isClub ? null : getDefaultPeriodizationPlan(user.uid)));
+            setCompetitionCalendar(userCal || (isClub ? null : getDefaultCompetitionCalendar(user.uid)));
+            setInferredContext(userInferred);
+          } catch (planErr) {
+            console.warn('Error loading periodization plan or inferred context:', planErr);
+            setPeriodizationPlan(isClub ? null : getDefaultPeriodizationPlan(user.uid));
+            setCompetitionCalendar(isClub ? null : getDefaultCompetitionCalendar(user.uid));
+          }
+
+          const decision = evaluateOnboardingDecision(profile);
+          setOnboardingMode(decision.mode);
+          setShowOnboardingModal(decision.showModal);
+          
+          // Load threads & message history
+          await loadUserThreads(user.uid);
+        } catch (initErr) {
+          console.error('[Auth Init] Error loading athlete data:', initErr);
+        } finally {
+          setIsProfileLoading(false);
+          setAuthInitialized(true);
         }
-
-        const decision = evaluateOnboardingDecision(profile);
-        setOnboardingMode(decision.mode);
-        setShowOnboardingModal(decision.showModal);
-        
-        // Load threads
-        await loadUserThreads(user.uid);
-
-        setIsProfileLoading(false);
       } else {
-        // If unauthenticated, display Auth Modal with zero-flash
+        // Unauthenticated
+        setCurrentUser(null);
+        setAthlete(null);
         setShowAuthModal(true);
+        setShowOnboardingModal(false);
         setIsProfileLoading(false);
+        setAuthInitialized(true);
       }
     });
 
@@ -504,7 +504,7 @@ export default function App() {
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-zinc-950">
       
       {/* Zero-Flash Loading Cover: Gated on full Firestore read */}
-      {(!authInitialized || isProfileLoading) && (
+      {(!authInitialized || isProfileLoading || currentUser === undefined) && (
         <div className="fixed inset-0 z-50 bg-zinc-950 flex flex-col items-center justify-center font-sans">
           <div className="flex items-center gap-3 text-emerald-400 font-mono text-sm">
             <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
@@ -513,13 +513,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Step 1: Authentication Gate */}
-      {showAuthModal && (
+      {/* Step 1: Authentication Gate (Only when unauthenticated after auth check completes) */}
+      {currentUser === null && authInitialized && showAuthModal && (
         <AuthModal onAuthenticated={handleAuthenticated} />
       )}
 
-      {/* Step 2: Stepped / Gated Onboarding Modal (Rendered as overlay modal) */}
-      {!showAuthModal && showOnboardingModal && athlete && !isProfileLoading && (
+      {/* Step 2: Stepped / Gated Onboarding Modal (Rendered only for authenticated athlete needing calibration) */}
+      {currentUser && !showAuthModal && showOnboardingModal && athlete && !isProfileLoading && (
         <UnsubscribedOnboardingModal
           athlete={athlete}
           mode={onboardingMode === 'none' ? 'partial' : onboardingMode}
@@ -618,6 +618,16 @@ export default function App() {
               onThreadTitleUpdated={handleThreadTitleUpdated}
               onRequireThread={handleRequireThread}
             />
+          ) : !isProfileLoading && !showAuthModal ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-zinc-400 font-mono text-sm">
+              <p className="mb-4 text-zinc-300">Inicializando sesión de entrenamiento...</p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition shadow-lg cursor-pointer"
+              >
+                Recargar Interfaz
+              </button>
+            </div>
           ) : null}
         </main>
       </div>

@@ -19,6 +19,22 @@ import {
 } from 'lucide-react';
 import { ChatMessage, AttachedFile } from '../types';
 
+class MessageContentBoundary extends React.Component<{ children: React.ReactNode; fallbackText: string }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(err: any) { console.warn('[Message Render Error]:', err); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="font-mono text-xs text-rose-300 p-3 rounded-lg bg-rose-950/40 border border-rose-800/60 whitespace-pre-wrap">
+          {this.props.fallbackText}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 interface ChatMessageItemProps {
   message: ChatMessage;
   messageIndex?: number;
@@ -221,66 +237,68 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
 
       {/* Content Rendering */}
       <div className="prose prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-zinc-950 prose-pre:border prose-pre:border-zinc-800 prose-headings:font-mono prose-headings:text-emerald-400 prose-strong:text-emerald-300 text-sm sm:text-base">
-        {typeof message.content === 'string' ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              h1: ({ node, ...props }) => <h1 className="text-lg sm:text-xl font-mono font-bold text-emerald-400 border-b border-zinc-800 pb-1 mt-4 mb-2 uppercase tracking-wide" {...props} />,
-              h2: ({ node, ...props }) => <h2 className="text-base sm:text-lg font-mono font-bold text-emerald-400 mt-4 mb-2 uppercase tracking-wide flex items-center gap-2" {...props} />,
-              h3: ({ node, ...props }) => <h3 className="text-sm sm:text-base font-mono font-bold text-cyan-300 mt-3 mb-1.5 uppercase tracking-wide" {...props} />,
-              table: ({ node, ...props }) => (
-                <div className="overflow-x-auto my-3 border border-zinc-800 rounded-lg bg-zinc-950/80 p-1">
-                  <table className="w-full text-left border-collapse text-xs sm:text-sm font-mono" {...props} />
-                </div>
-              ),
-              thead: ({ node, ...props }) => <thead className="bg-zinc-800/80 text-emerald-400 border-b border-zinc-700" {...props} />,
-              th: ({ node, ...props }) => <th className="p-2 sm:p-2.5 font-bold uppercase tracking-wider text-xs" {...props} />,
-              td: ({ node, ...props }) => <td className="p-2 sm:p-2.5 border-b border-zinc-800/50 text-zinc-300" {...props} />,
-              code: ({ node, className, children, ...props }) => {
-                return (
-                  <code className="bg-zinc-950 px-1.5 py-0.5 rounded text-emerald-300 font-mono text-xs border border-zinc-800" {...props}>
-                    {children}
-                  </code>
-                );
-              },
-              a: ({ node, href, children, ...props }) => {
-                let safeHref = href || '#';
-                if (safeHref.startsWith('doi.org/')) {
-                  safeHref = `https://${safeHref}`;
-                } else if (safeHref.startsWith('10.')) {
-                  safeHref = `https://doi.org/${safeHref}`;
-                } else if (safeHref.startsWith('www.')) {
-                  safeHref = `https://${safeHref}`;
-                } else if (!safeHref.startsWith('http://') && !safeHref.startsWith('https://') && !safeHref.startsWith('mailto:')) {
-                  safeHref = `https://${safeHref}`;
-                }
+        <MessageContentBoundary fallbackText={typeof message.content === 'string' ? message.content : JSON.stringify(message.content, null, 2)}>
+          {typeof message.content === 'string' ? (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ node, ...props }) => <h1 className="text-lg sm:text-xl font-mono font-bold text-emerald-400 border-b border-zinc-800 pb-1 mt-4 mb-2 uppercase tracking-wide" {...props} />,
+                h2: ({ node, ...props }) => <h2 className="text-base sm:text-lg font-mono font-bold text-emerald-400 mt-4 mb-2 uppercase tracking-wide flex items-center gap-2" {...props} />,
+                h3: ({ node, ...props }) => <h3 className="text-sm sm:text-base font-mono font-bold text-cyan-300 mt-3 mb-1.5 uppercase tracking-wide" {...props} />,
+                table: ({ node, ...props }) => (
+                  <div className="overflow-x-auto my-3 border border-zinc-800 rounded-lg bg-zinc-950/80 p-1">
+                    <table className="w-full text-left border-collapse text-xs sm:text-sm font-mono" {...props} />
+                  </div>
+                ),
+                thead: ({ node, ...props }) => <thead className="bg-zinc-800/80 text-emerald-400 border-b border-zinc-700" {...props} />,
+                th: ({ node, ...props }) => <th className="p-2 sm:p-2.5 font-bold uppercase tracking-wider text-xs" {...props} />,
+                td: ({ node, ...props }) => <td className="p-2 sm:p-2.5 border-b border-zinc-800/50 text-zinc-300" {...props} />,
+                code: ({ node, className, children, ...props }) => {
+                  return (
+                    <code className="bg-zinc-950 px-1.5 py-0.5 rounded text-emerald-300 font-mono text-xs border border-zinc-800" {...props}>
+                      {children}
+                    </code>
+                  );
+                },
+                a: ({ node, href, children, ...props }) => {
+                  let safeHref = href || '#';
+                  if (safeHref.startsWith('doi.org/')) {
+                    safeHref = `https://${safeHref}`;
+                  } else if (safeHref.startsWith('10.')) {
+                    safeHref = `https://doi.org/${safeHref}`;
+                  } else if (safeHref.startsWith('www.')) {
+                    safeHref = `https://${safeHref}`;
+                  } else if (!safeHref.startsWith('http://') && !safeHref.startsWith('https://') && !safeHref.startsWith('mailto:')) {
+                    safeHref = `https://${safeHref}`;
+                  }
 
-                return (
-                  <a
-                    href={safeHref}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="text-emerald-400 hover:text-emerald-300 font-semibold underline decoration-emerald-500/60 hover:decoration-emerald-400 inline-flex items-center gap-1 font-mono text-xs transition-colors break-all"
-                    {...props}
-                  >
-                    <span>{children}</span>
-                    <ExternalLink className="w-3 h-3 shrink-0 text-emerald-400/80" />
-                  </a>
-                );
-              },
-              blockquote: ({ node, ...props }) => (
-                <blockquote className="border-l-2 border-emerald-500/80 pl-3 py-1 my-2 bg-emerald-950/20 text-zinc-300 italic text-xs sm:text-sm" {...props} />
-              )
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
-        ) : (
-          <div className="font-mono text-xs text-zinc-300 whitespace-pre-wrap">
-            {JSON.stringify(message.content, null, 2)}
-          </div>
-        )}
+                  return (
+                    <a
+                      href={safeHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-emerald-400 hover:text-emerald-300 font-semibold underline decoration-emerald-500/60 hover:decoration-emerald-400 inline-flex items-center gap-1 font-mono text-xs transition-colors break-all"
+                      {...props}
+                    >
+                      <span>{children}</span>
+                      <ExternalLink className="w-3 h-3 shrink-0 text-emerald-400/80" />
+                    </a>
+                  );
+                },
+                blockquote: ({ node, ...props }) => (
+                  <blockquote className="border-l-2 border-emerald-500/80 pl-3 py-1 my-2 bg-emerald-950/20 text-zinc-300 italic text-xs sm:text-sm" {...props} />
+                )
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          ) : (
+            <div className="font-mono text-xs text-zinc-300 whitespace-pre-wrap">
+              {JSON.stringify(message.content, null, 2)}
+            </div>
+          )}
+        </MessageContentBoundary>
       </div>
 
       {/* Quick Action Button for Healthy Clearance if Partial Onboarding Required */}

@@ -415,7 +415,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         setIsPreloading(false);
       });
     }
-  }, [activeThreadId, athlete]);
+  }, [activeThreadId, athlete?.id]);
 
   // Auto scroll
   const scrollToBottom = () => {

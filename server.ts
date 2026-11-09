@@ -127,6 +127,13 @@ async function extractDocumentWithGemini(
     throw new Error("Clave de Gemini API no configurada para extracción de documentos");
   }
 
+  // Strip data URI prefix if present to ensure pure base64
+  let cleanBase64 = base64Data;
+  if (cleanBase64.includes(';base64,')) {
+    cleanBase64 = cleanBase64.split(';base64,')[1];
+  }
+  cleanBase64 = cleanBase64.trim();
+
   const ai = new GoogleGenAI({ apiKey });
   const prompt = `Actúa como ARIA, el sistema de inteligencia biomecánica de élite para atletismo de STRIDES.
 Analiza con máxima precisión técnica este documento o gráfica adjunta ("${fileName}").
@@ -151,7 +158,7 @@ REGLA: Fidelidad estricta. Si un dato no es legible, indícalo expresamente.`;
         {
           inlineData: {
             mimeType,
-            data: base64Data
+            data: cleanBase64
           }
         }
       ]
@@ -166,9 +173,9 @@ REGLA: Fidelidad estricta. Si un dato no es legible, indícalo expresamente.`;
     });
     return response.text?.trim() || '';
   } catch (err: any) {
-    // If gemini-1.5-flash returns model not found / deprecated, fall back to gemini-3.8-flash
+    // If gemini-1.5-flash fails or is unavailable, fall back to gemini-2.5-flash
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-2.5-flash',
       contents,
       config: { temperature: 0.1 }
     });
@@ -956,6 +963,9 @@ ${periodizationSection}${literatureSection}${coachingSection}`.trim();
         const rawMime = fileObj.type || '';
         let mime = resolveMimeType(fileName, rawMime);
         let base64 = fileObj.base64Data || '';
+        if (base64 && base64.includes(';base64,')) {
+          base64 = base64.split(';base64,')[1];
+        }
         let isText = false;
         let textContent = '';
 
