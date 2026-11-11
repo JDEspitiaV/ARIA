@@ -230,8 +230,8 @@ export default function App() {
         timestamp: new Date().toISOString()
       };
 
-      // Run cleanup async in background
-      cleanupOrphanedThreads(userId, userThreads);
+      // Run cleanup async in background (Temporarily disabled per request)
+      // cleanupOrphanedThreads(userId, userThreads);
       checkAndCleanupExpiredFiles(userId).then(count => {
         if (count > 0) console.log(`[48h-CLEANUP] Cleaned ${count} expired files for user ${userId}`);
       }).catch(err => console.warn('[48h-CLEANUP] Background check error:', err));
@@ -260,6 +260,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
+        console.log('[DIAG-USER]', user.uid, user.email, user.isAnonymous, user.providerData.map(p => p.providerId));
         setCurrentUser(user);
         setShowAuthModal(false);
         setIsProfileLoading(true);
@@ -296,9 +297,14 @@ export default function App() {
             setCompetitionCalendar(isClub ? null : getDefaultCompetitionCalendar(user.uid));
           }
 
-          const decision = evaluateOnboardingDecision(profile);
-          setOnboardingMode(decision.mode);
-          setShowOnboardingModal(decision.showModal);
+          if (profile.onboardingComplete === true) {
+            setShowOnboardingModal(false);
+            setOnboardingMode('none');
+          } else {
+            const decision = evaluateOnboardingDecision(profile);
+            setOnboardingMode(decision.mode);
+            setShowOnboardingModal(decision.showModal);
+          }
           
           // Load threads & message history
           await loadUserThreads(user.uid);
@@ -360,9 +366,14 @@ export default function App() {
       setCompetitionCalendar(isClub ? null : getDefaultCompetitionCalendar(userId));
     }
 
-    const decision = evaluateOnboardingDecision(profile);
-    setOnboardingMode(decision.mode);
-    setShowOnboardingModal(decision.showModal);
+    if (profile?.onboardingComplete === true) {
+      setShowOnboardingModal(false);
+      setOnboardingMode('none');
+    } else {
+      const decision = evaluateOnboardingDecision(profile);
+      setOnboardingMode(decision.mode);
+      setShowOnboardingModal(decision.showModal);
+    }
     
     await loadUserThreads(userId);
     setIsProfileLoading(false);
@@ -559,7 +570,7 @@ export default function App() {
       )}
 
       {/* Step 2: Stepped / Gated Onboarding Modal (Rendered only for authenticated athlete needing calibration) */}
-      {currentUser && !showAuthModal && showOnboardingModal && athlete && !isProfileLoading && (
+      {currentUser && !showAuthModal && showOnboardingModal && athlete && !isProfileLoading && athlete.onboardingComplete !== true && (
         <UnsubscribedOnboardingModal
           athlete={athlete}
           mode={onboardingMode === 'none' ? 'partial' : onboardingMode}

@@ -58,10 +58,7 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
 export const auth = getAuth(app);
-const configuredDbId = (appletConfig as any).firestoreDatabaseId;
-export const db = (configuredDbId && configuredDbId !== '(default)')
-  ? getFirestore(app, configuredDbId)
-  : getFirestore(app);
+export const db = getFirestore(app, "ai-studio-2e02a69f-fc8d-46cd-bbc1-146c884acf19");
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
@@ -214,9 +211,16 @@ export async function signInWithSSO(providerType: 'google' | 'microsoft' | 'appl
 export async function getAthleteProfile(athleteId: string): Promise<AthleteProfile | null> {
   const profileRef = doc(db, 'users', athleteId);
   const snap = await getDoc(profileRef);
+  console.log('[DIAG] project:', (appletConfig as any).projectId,
+    '| db:', (db as any)._databaseId?.database,
+    '| uid:', athleteId, '| exists:', snap.exists(),
+    '| onboardingComplete:', snap.exists() ? snap.data().onboardingComplete : 'n/a');
   if (snap.exists()) {
     const raw = snap.data();
     const { profile, needsSave } = normalizeProfile(athleteId, raw);
+    if (raw.onboardingComplete === true) {
+      profile.onboardingComplete = true;
+    }
     
     // One-time migration backfill: persist normalized shape back to Firestore
     if (needsSave || !raw.anthropometrics || !raw.targetEvents) {
